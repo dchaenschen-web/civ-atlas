@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 打开网页:先下载、先放出来的只有这一小份,主程序(App.tsx 和它用到的地图、推演、编辑地形、助手、导出……)单独一个文件。
  * 这一小份还没下好时先是页面里的加载画面(网站图标、名字、进度条;scripts/lib/loadScreen.ts),下面挂上了它就淡出。
  *
@@ -16,7 +16,6 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { HomeShell } from './HomeShell';
 import { plainHome, type HomeStart } from './homeStart';
-import { warmNewWorldPictures } from './NewWorldDialog';
 import { prefetchWorker } from './workerUrl';
 import { afterHomeLoad } from './homeLoad';
 import { downloadApp, loadScreenDone, loadScreenFail } from './loadScreen';
@@ -105,7 +104,8 @@ export function Boot() {
     return afterHomeLoad(() => {
       loadApp().then((m) => {
         setApp(m);
-        warmNewWorldPictures();
+        // 新建世界弹窗按需下载(不占首页体积);首页出来后顺手把它的星球图热一下
+        void import('./NewWorldDialog').then((m) => m.warmNewWorldPictures());
         // 已经要离开首页的不用:App 挂上马上就开线程
         if (!leftRef.current) prefetchWorker();
       }, () => {});

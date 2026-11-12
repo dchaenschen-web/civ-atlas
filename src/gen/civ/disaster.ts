@@ -116,15 +116,15 @@ export function strikeDisaster(sim: CivSim, iv: InterventionModel, v: DisasterIv
  * 一国一条 famine(地震水旱 cause = quake;部落地带不记),国内更动荡(unrest.ts 照饥荒算)。
  * 作者下的饥荒、地震水旱和「天灾」多 / 很多时自己发生的地震水旱(pandemic.ts)共用
  */
-export function afflict(sim: CivSim, pm: PolityModel, hit: readonly number[], pop: ReadonlyMap<number, number>, t: Year, loss: number, cause: 'quake' | 'famine', center: number): void {
+export function afflict(sim: CivSim, pm: PolityModel, hit: readonly number[], pop: ReadonlyMap<number, number>, t: Year, loss: number, cause: 'quake' | 'volcano' | 'famine' | 'impact', center: number): void {
   const owner = sim.owners[Layer.Polity];
   const S = pm.settlements;
   /** 国家 → 受灾的州(城最大的在前) */
   const per = new Map<number, number[]>();
   for (const r of hit) {
     const sid = pm.cityOf[r];
-    // 地震一类的记下震中:是大水、大旱还是地震按震中那州定,波及的邻州一样
-    (S[sid].sacks ??= []).push(cause === 'quake' ? { year: t, loss, cause, from: center } : { year: t, loss, cause });
+    // 地震一类的记下震中:是大水、大旱还是地震按震中那州定,波及的邻州一样;火山另记一种
+    (S[sid].sacks ??= []).push(cause === 'famine' ? { year: t, loss, cause } : { year: t, loss, cause, from: center });
     const p = owner[r];
     if (p < 0) continue;
     let l = per.get(p);
@@ -144,7 +144,13 @@ export function afflict(sim: CivSim, pm: PolityModel, hit: readonly number[], po
         top = r;
       }
     }
-    sim.record('famine', { a: p, b: l.length, region: top, settlement: pm.cityOf[top], ...(cause === 'quake' ? { cause: 'quake' as const } : {}) });
+    sim.record('famine', {
+      a: p,
+      b: l.length,
+      region: top,
+      settlement: pm.cityOf[top],
+      ...(cause === 'quake' ? { cause: 'quake' as const } : cause === 'volcano' ? { cause: 'volcano' as const } : cause === 'impact' ? { cause: 'impact' as const } : {}),
+    });
     if (um) {
       let fl = um.famines.get(p);
       if (!fl) um.famines.set(p, (fl = []));

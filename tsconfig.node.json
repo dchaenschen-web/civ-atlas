@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2022", "DOM"],
+    "outDir": "out/jsbuild",
+    "rootDir": ".",
+    "noEmit": false,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "declaration": false,
+    "sourceMap": false,
+    "removeComments": true,
+    "isolatedModules": false
+  },
+  "include": ["src/gen/**/*.ts", "scripts/node-verify.ts", "scripts/preview-types.ts"],
+  "exclude": ["src/gen/worldCheck.ts", "src/gen/worldCheck.worker.ts", "node_modules"]
+}

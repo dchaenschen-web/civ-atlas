@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 导播的排期(纯计算):给一段年份、编年史、关注对象、节奏设置,排出导播放哪几件事、按什么顺序、
  * 每一段从第几秒开始、停多久、镜头去哪、地图上标在哪、字幕写什么;排不下的列进"略过的"。
  * 不碰 DOM,单测直接测(tests/director-plan.test.ts)。字幕的写法和回放视频一样(filmPlan.ts 的 filmEvents:
@@ -29,6 +29,7 @@
  *   (对上的那条不再另放),停得和头等大事一样久,不略过、不和别的合成一段;情节之间只放头等大事,其余进"略过的"(crowd)。
  * - 同样的输入每次排得一样:不用随机数,排序都有确定的先后(分量、年份、编号)。
  */
+import { systemOpt } from '../gen/systemState';
 import { MAJOR, entryInvolves, type ChronicleEntry } from '../gen/civ/story/chronicle';
 import type { Civ, Person } from '../gen/civ/types';
 import { personSpan } from '../gen/civ/story/peopleInfo';
@@ -497,6 +498,7 @@ function plotCand(ctx: ShotCtx, p: DirectorPlot, factor: number, era: Era | null
   return {
     entry,
     type: 'outline',
+      ...systemOpt(),
     typeName: '大纲',
     label: yearFull(Math.floor(p.year), era),
     text: p.text,

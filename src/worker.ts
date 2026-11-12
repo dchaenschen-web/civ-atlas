@@ -1,4 +1,4 @@
-/// <reference lib="webworker" />
+﻿/// <reference lib="webworker" />
 /**
  * 后台线程:生成世界 + 文明骨架 + 铺像素 + 回放帧 + 带着干预重推文明,不卡界面。
  * 铺像素里最慢的沟和山脊分给几个帮手线程(gullyPool.ts;核多的电脑最多 3 个),和推文明同时算。
@@ -43,6 +43,7 @@
  * 每一步的样子记在线程里(outlineCache),改了后面几条情节再推时,前面没改的不重算;换世界时放掉。
  */
 import { generateWorld, generateWorldSteps, type BaseCache, type World, type WorldParams } from './gen/world';
+import type { SystemOverrides } from './gen/astroDesign';
 import { dropGullyBuffers, rasterizeDeferred, rasterizeDeferredSteps, type Raster } from './gen/raster';
 import { GullyPool } from './gullyPool';
 import { buildHistoryFrames, type HistoryFrames } from './gen/history';
@@ -104,6 +105,8 @@ export interface EraWorld {
 /** 推文明的请求里共有的:地形修改、草图、干预、地形大事、主线程记着的扩张节拍 */
 interface CivInput {
   params: WorldParams;
+  /** 逐行星/卫星覆盖表(新建世界的星系结构编辑;不给 = 单行星、和以前一样) */
+  system?: SystemOverrides;
   terrain?: TerrainOp[];
   sketch?: SketchEdit;
   /** 地形大事(不给 = 没有) */
@@ -454,18 +457,18 @@ async function postChronicleUnlessSuperseded(id: number, civ: Civ, m: ChronicleA
 const tempos = new Map<string, PlanetTempo | null>();
 const TEMPO_KEEP = 32;
 function rememberTempo(params: WorldParams, sketch: SketchEdit | undefined, tempo: PlanetTempo | null) {
-  const key = keyOf(params, undefined, sketch);
+  const key = kOf(params, undefined, sketch);
   tempos.delete(key);
   tempos.set(key, tempo);
   if (tempos.size > TEMPO_KEEP) tempos.delete(tempos.keys().next().value!);
 }
 /** 主线程带回来的节拍:星球对得上才记 */
 function takeTempo(params: WorldParams, sketch: SketchEdit | undefined, note?: TempoNote) {
-  if (note && note.key === keyOf(params, undefined, sketch) && !tempos.has(note.key)) rememberTempo(params, sketch, note.tempo);
+  if (note && note.key === kOf(params, undefined, sketch) && !tempos.has(note.key)) rememberTempo(params, sketch, note.tempo);
 }
 /** 回报给主线程的节拍(手里没有 = 不给) */
 function noteOf(params: WorldParams, sketch: SketchEdit | undefined): TempoNote | undefined {
-  const key = keyOf(params, undefined, sketch);
+  const key = kOf(params, undefined, sketch);
   const tempo = tempos.get(key);
   return tempo === undefined ? undefined : { key, tempo };
 }
@@ -475,7 +478,7 @@ function noteOf(params: WorldParams, sketch: SketchEdit | undefined): TempoNote 
  */
 function tempoOf(params: WorldParams, terrain: TerrainOp[] | undefined, sketch: SketchEdit | undefined, civSeed?: number): PlanetTempo | null | undefined {
   if (!terrain?.length || civSeed !== undefined) return undefined;
-  const key = keyOf(params, undefined, sketch);
+  const key = kOf(params, undefined, sketch);
   if (!tempos.has(key)) rememberTempo(params, sketch, planetTempo(params, undefined, sketchGrid(sketch)) ?? null);
   return tempos.get(key);
 }
@@ -501,12 +504,15 @@ let terrain = NOW_TERRAIN;
 
 /** 这组参数(+ 草图 + 地形修改)的世界:手里有就用,没有(线程被重开过)就重新生成(同样的输入 = 同一个世界) */
 function worldOf(params: WorldParams, terrain?: TerrainOp[], sketch?: SketchEdit): World {
-  const key = keyOf(params, terrain, sketch);
-  if (frozen?.key === key) return frozen.world;
+  const key = kOf(params, terrain, sketch);
+  if (frozen?.key === key) {
+    systemNow = frozen.world.system ?? null;
+    return frozen.world;
+  }
   if (!last || last.key !== key) {
     // 换下来的世界的推文明底子一起放掉(不拉住旧世界)
     if (civMemo && civMemo.world === last?.world) civMemo = null;
-    last = { key, world: generateWorld(params, undefined, terrain, sketchGrid(sketch), baseCache) };
+    last = { key, world: generateWorld(params, undefined, terrain, sketchGrid(sketch), baseCache, systemNow) };
   }
   return last.world;
 }
@@ -532,10 +538,10 @@ const memoOpt = (world: World, civSeed: number | undefined) => (civMemo?.world =
  * 就用它的形成过程;不一样(生成器改了地形)就只放原件里现在的样子这一帧,不拿别的星球的形成过程顶替
  */
 function formationOf(params: WorldParams, terrain?: TerrainOp[], sketch?: SketchEdit): World {
-  const key = keyOf(params, terrain, sketch);
+  const key = kOf(params, terrain, sketch);
   if (frozen?.key !== key) return worldOf(params, terrain, sketch);
   const now = frozen.world;
-  const fresh = generateWorld(params, undefined, terrain, sketchGrid(sketch));
+  const fresh = generateWorld(params, undefined, terrain, sketchGrid(sketch), undefined, systemNow);
   const a = fresh.elevation;
   const b = now.elevation;
   const same = a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
@@ -549,7 +555,7 @@ function formationOf(params: WorldParams, terrain?: TerrainOp[], sketch?: Sketch
 const WORLD_KEEP = 8;
 const worlds = new Map<string, World>();
 function cachedWorld(params: WorldParams, ops: readonly TerrainOp[], sketch: SketchEdit | undefined): { key: string; world: World } {
-  const key = keyOf(params, ops, sketch);
+  const key = kOf(params, ops, sketch);
   const pinned = frozen?.eras.get(key);
   if (pinned) return { key, world: pinned };
   // 地图留着的世界只有存下的那几段,新的地形长不出来(按种子长的是另一颗星球)
@@ -557,7 +563,7 @@ function cachedWorld(params: WorldParams, ops: readonly TerrainOp[], sketch: Ske
   let w = worlds.get(key);
   if (w) worlds.delete(key);
   else {
-    w = generateWorld(params, undefined, ops, sketchGrid(sketch));
+    w = generateWorld(params, undefined, ops, sketchGrid(sketch), undefined, systemNow);
     w.history = [];
   }
   worlds.set(key, w);
@@ -595,7 +601,7 @@ let held: { key: string; civ?: Civ; part?: SnapshotPart; fromPart?: (value: unkn
 let outlineCache: OutlineCache | null = null;
 function heldKey(m: CivRecipe, play: PlayState | undefined): string {
   const r: Recipe = { params: m.params, terrain: m.terrain, sketch: m.sketch, interventions: m.interventions, upheavals: m.upheavals, names: m.names, frontier: m.frontier, origins: m.origins, calamity: m.calamity, ...recipeTuning(m.tuning), civSeed: m.civSeed, keptMap: m.keptMap, play };
-  return `${frozenOld(keyOf(m.params, m.terrain, m.sketch)) ? 'frozen:' : ''}${recipeText(r)}`;
+  return `${frozenOld(kOf(m.params, m.terrain, m.sketch)) ? 'frozen:' : ''}${recipeText(r)}`;
 }
 /** 推好了一份历史(复制的那一份,交给主线程之前调用;没复制成 = null):记下来 */
 function keepCiv(m: CivRecipe, play: PlayState | undefined, civ: Civ | null) {
@@ -621,7 +627,7 @@ async function heldCiv(m: CivRecipe, play: PlayState | undefined): Promise<Civ |
  * 照原样打开的旧世界(frozen)重推时:山海湖岛的地名不照"没改过地形的星球"起 —— 按现在的版本生成的那一颗不一定是它原来的
  * (gen/civ 的 CivParams.placeRef)
  */
-const frozenOpt = (m: Pick<CivInput, 'params' | 'terrain' | 'sketch'>) => (frozenOld(keyOf(m.params, m.terrain, m.sketch)) ? { placeRef: false as const } : {});
+const frozenOpt = (m: Pick<CivInput, 'params' | 'terrain' | 'sketch'>) => (frozenOld(kOf(m.params, m.terrain, m.sketch)) ? { placeRef: false as const } : {});
 
 /**
  * 生成世界时推这个世界的文明(generate 和补推的 civOnly 共用这一份,同样的输入 = 同一份历史)。
@@ -650,7 +656,7 @@ function remember(key: string, r: Regions): Regions {
 /** 第 year 年的地形和州(upheavalBase:同一年已有的大事地形算在内、州不算),和那时的全部地形修改 */
 function baseAt(params: WorldParams, terrain: TerrainOp[] | undefined, sketch: SketchEdit | undefined, steps: Step[], year: number, seed: number): { world: World; regions: Regions; ops: TerrainOp[] } {
   // 照原样读进来的旧世界和现在的版本生成的同一个世界键一样、地形不一样:州分开记;同一张地图上的几段历史州也不一样(文明种子)
-  const k0 = `${frozenOld(keyOf(params, terrain, sketch)) ? 'frozen:' : ''}${seed === params.seed ? '' : `civ${seed}:`}${keyOf(params, terrain, sketch)}`;
+  const k0 = `${frozenOld(kOf(params, terrain, sketch)) ? 'frozen:' : ''}${seed === params.seed ? '' : `civ${seed}:`}${kOf(params, terrain, sketch)}`;
   let w = worldOf(params, terrain, sketch);
   let r = regionsMemo.get(k0) ?? remember(k0, buildRegions(w, computeHabitat(w), { regionArea: REGION_AREA, seed, knobs: OFFICIAL_KNOBS }));
   let ops: TerrainOp[] = [...(terrain ?? [])];
@@ -723,7 +729,7 @@ const POSTED_KEEP = 64;
 function queuePatches(id: number, m: CivInput, steps: Step[]) {
   bg.length = 0;
   const have = new Set(m.have ?? []);
-  const baseKey = keyOf(m.params, m.terrain, m.sketch);
+  const baseKey = kOf(m.params, m.terrain, m.sketch);
   const links: Link[] = [{ chain: baseKey, world: () => worldOf(m.params, m.terrain, m.sketch) }];
   for (const s of steps) links.push({ chain: digest(`${links[links.length - 1].chain}>${s.key}`), world: () => s.world });
   const prevOf = (i: number) => (i ? steps[i - 1].key : baseKey);
@@ -788,7 +794,7 @@ function queueSnapshot(id: number, m: CivInput & { interventions?: Intervention[
   const chron = lastBlock;
   lastBlock = null;
   if (!civ) return;
-  const baseKey = keyOf(m.params, m.terrain, m.sketch);
+  const baseKey = kOf(m.params, m.terrain, m.sketch);
   const pin = m.keptMap && frozen?.key === baseKey ? frozen.kept : undefined;
   bg.push(async () => {
     let snapshot: Snapshot;
@@ -838,7 +844,7 @@ function queueWorldParts(id: number, offer: WorldPartsOffer, world: World, civ: 
 
 /** 把线程手上的世界打成完整的内容(见文件头 packParts):和 queueSnapshot、queueWorldParts 打出来的一样,只是当场打 */
 async function packedOffer(m: Extract<Queued, { type: 'packParts' }>): Promise<WorldPartsOffer> {
-  const baseKey = keyOf(m.params, m.terrain, m.sketch);
+  const baseKey = kOf(m.params, m.terrain, m.sketch);
   const pin = m.keptMap && frozen?.key === baseKey ? frozen.kept : undefined;
   // 照原样打开的旧世界:这一版算出来的不是它原来的样子,算不了。地图留着的世界,线程手上不是那张地图:按种子长的是另一颗星球
   if (frozenOld(baseKey) && !pin) throw new Error('照原样打开的旧世界不重新打');
@@ -916,7 +922,7 @@ interface LoadedWorld {
  * wantCiv = false:不要历史(pin);世界仓库里校验过的不解开,原件也不解开
  */
 async function loadedOf(m: LoadRequest, wantCiv: boolean): Promise<LoadedWorld> {
-  const key = keyOf(m.params, m.terrain, m.sketch);
+  const key = kOf(m.params, m.terrain, m.sketch);
   // 打开世界才要的代码(校验器、世界文件)单独一个文件,只新建世界的不用下载。下载不下来和读不了一样,退回旧的路
   const fromVault = m.vault ? await (await import('./worldOpen')).openStoredWorld(m.vault, wantCiv, !wantCiv && !!m.keptMap) : null;
   const world = fromVault ? fromVault.world : ((await partOf(m, 'map')) as World);
@@ -927,7 +933,7 @@ async function loadedOf(m: LoadRequest, wantCiv: boolean): Promise<LoadedWorld> 
   let all: TerrainOp[] = [...(m.terrain ?? [])];
   const steps = mergeUpheavals(m.upheavals ?? []).map((u) => {
     all = [...all, ...u.ops];
-    const k = keyOf(m.params, all, m.sketch);
+    const k = kOf(m.params, all, m.sketch);
     const w = eras.get(k);
     if (!w) throw new Error('存的内容里少一段');
     return { ...u, key: k, all, world: w };
@@ -1114,8 +1120,16 @@ function checkKept(m: Queued): void {
   if (m.type === 'generate' || frozen?.kept?.part.sum !== m.keptMap) throw new Error('地图留着的世界:线程手上没有那张地图');
 }
 
+/** 当前这个世界(或这一次生成)的覆盖表;换世界只走 generate / load,别的消息不动它 */
+let systemNow: SystemOverrides | null = null;
+/** 缓存键带上覆盖表:同参数、不同覆盖表 = 两个世界 */
+const kOf = (params: WorldParams, terrain?: readonly TerrainOp[], sketch?: SketchEdit) =>
+  systemNow ? `${keyOf(params, terrain, sketch)}|sys:${JSON.stringify(systemNow)}` : keyOf(params, terrain, sketch);
+
 async function handle(m: Queued): Promise<void> {
   simError = null;
+  // 生成新世界时带着覆盖表;没给 = 单行星(老行为)
+  if (m.type === 'generate') systemNow = m.system ?? null;
   if (simFail !== undefined && simFail < 0 && ((m.type === 'generate' && !m.skipCiv) || m.type === 'resim' || m.type === 'extend' || m.type === 'turn' || m.type === 'outline')) throw new Error('故意让线程出错');
   checkKept(m);
   // 有了新的活:逐年推演上一步等着打的原件不要了(新的一步、换了世界、重推会各自再排)
@@ -1146,10 +1160,10 @@ async function handle(m: Queued): Promise<void> {
     const t0 = performance.now();
     const had = baseCache.base;
     // 一段一段算,中间让一下:新的一笔来了就不算了(线程不用关掉重开,记着的网格、板块、前一半、整图都还在)
-    const world = await generateUnlessSuperseded(m.params, (stage, pct) => post({ type: 'progress', id: m.id, stage, pct }), m.terrain, sketchGrid(m.sketch), baseCache);
+    const world = await generateUnlessSuperseded(m.params, (stage, pct) => post({ type: 'progress', id: m.id, stage, pct }), m.terrain, sketchGrid(m.sketch), baseCache, systemNow);
     if (!world) return void post({ type: 'aborted', id: m.id });
     const reused = !!had && baseCache.base === had;
-    last = { key: keyOf(m.params, m.terrain, m.sketch), world };
+    last = { key: kOf(m.params, m.terrain, m.sketch), world };
     const steps = stepsOf(m.params, m.terrain, m.sketch, m.upheavals, (k, n) => post({ type: 'progress', id: m.id, stage: '地形大事', pct: 0.9 + (0.03 * k) / n }));
     const genMs = performance.now() - t0;
     if (superseded()) return void post({ type: 'aborted', id: m.id });
@@ -1229,7 +1243,7 @@ async function handle(m: Queued): Promise<void> {
     // 回放快照体积大且主线程用不上,不随世界一起发送
     const { history: _history, ...rest } = world;
     void _history;
-    const baseKey = keyOf(m.params, m.terrain, m.sketch);
+    const baseKey = kOf(m.params, m.terrain, m.sketch);
     // 地图先交(mapFirst,整张铺的):沟壑本线程也领一段,铺完就交 map,再推文明。
     // 推文明的时候本线程收不到消息(帮手算好的沟壑也收不到),和推文明同时算沟壑的话,地图要等推完才交得出去
     const early = !!m.mapFirst && !m.skipCiv && !pj && !old;
@@ -1327,7 +1341,7 @@ async function handle(m: Queued): Promise<void> {
     keepCiv(m, m.play, cloned);
     const ms = performance.now() - t0;
     const chron = await postChronicle(m.id, civ, m);
-    postCiv({ type: 'civOnly', id: m.id, nid: m.nid, civ, chron, ms, civMs, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey: keyOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
+    postCiv({ type: 'civOnly', id: m.id, nid: m.nid, civ, chron, ms, civMs, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey: kOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
     queueSnapshot(m.id, m, world, steps, cloned);
   } else if (m.type === 'load') {
     bg.length = 0;
@@ -1340,7 +1354,7 @@ async function handle(m: Queued): Promise<void> {
     await pool.up;
     const t0 = performance.now();
     post({ type: 'progress', id: m.id, stage: '读取', pct: 0.3 });
-    const baseKey = keyOf(m.params, m.terrain, m.sketch);
+    const baseKey = kOf(m.params, m.terrain, m.sketch);
     let f: LoadedWorld;
     try {
       f = await loadedOf(m, true);
@@ -1436,7 +1450,7 @@ async function handle(m: Queued): Promise<void> {
       keepCiv(m, m.play, cloned);
       // 主线程只换上最新的一次重推;换了世界的也不换
       const chron = await postChronicleUnlessSuperseded(m.id, civ, m, () => fg.some((r) => r.type === 'generate' || r.type === 'load' || r.type === 'resim'));
-      postCiv({ type: 'civ', id: m.id, seq: m.seq, civ, ...(chron !== undefined ? { chron } : {}), ms, tempo, eras: eraWorlds(steps), baseKey: keyOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
+      postCiv({ type: 'civ', id: m.id, seq: m.seq, civ, ...(chron !== undefined ? { chron } : {}), ms, tempo, eras: eraWorlds(steps), baseKey: kOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
       queuePatches(m.id, m, steps);
       queueSnapshot(m.id, m, world, steps, cloned);
     } else postCiv({ type: 'trial', id: m.id, tid: m.tid, civ, ms, tempo }, civTransferables(civ));
@@ -1454,7 +1468,7 @@ async function handle(m: Queued): Promise<void> {
     const cloned = cloneCiv(out.civ);
     keepCiv(m, out.play, cloned);
     const chron = await postChronicle(m.id, out.civ, m);
-    postCiv({ type: 'turn', id: m.id, civ: out.civ, chron, play: out.play, rejected: out.rejected, ms, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey: keyOf(m.params, m.terrain, m.sketch) }, civTransferables(out.civ));
+    postCiv({ type: 'turn', id: m.id, civ: out.civ, chron, play: out.play, rejected: out.rejected, ms, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey: kOf(m.params, m.terrain, m.sketch) }, civTransferables(out.civ));
     queuePatches(m.id, m, steps);
     // 原件很大,打一份要好一会儿:一步接一步往下走的时候不每一步都打(会拖慢下一步),停下来一阵子没有下一步了才打最后这一份
     dropTurnSnap();
@@ -1487,7 +1501,7 @@ async function handle(m: Queued): Promise<void> {
     const cloned = cloneCiv(civ);
     keepCiv(m, undefined, cloned);
     const chron = await postChronicleUnlessSuperseded(m.id, civ, m, stop);
-    postCiv({ type: 'extended', id: m.id, xid: m.xid, civ, ...(chron !== undefined ? { chron } : {}), to, ms, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey: keyOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
+    postCiv({ type: 'extended', id: m.id, xid: m.xid, civ, ...(chron !== undefined ? { chron } : {}), to, ms, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey: kOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
     queuePatches(m.id, m, steps);
     queueSnapshot(m.id, { ...m, endYear: to }, world, steps, cloned);
   } else if (m.type === 'outline') {
@@ -1532,7 +1546,7 @@ async function handle(m: Queued): Promise<void> {
     const cloned = cloneCiv(civ);
     keepCiv(done, undefined, cloned);
     const chron = await postChronicleUnlessSuperseded(m.id, civ, m, stop);
-    postCiv({ type: 'outlined', id: m.id, oid: m.oid, civ, ...(chron !== undefined ? { chron } : {}), interventions: out.interventions, review: out.review, ms, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey: keyOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
+    postCiv({ type: 'outlined', id: m.id, oid: m.oid, civ, ...(chron !== undefined ? { chron } : {}), interventions: out.interventions, review: out.review, ms, tempo: noteOf(m.params, m.sketch), eras: eraWorlds(steps), baseKey: kOf(m.params, m.terrain, m.sketch) }, civTransferables(civ));
     queuePatches(m.id, m, steps);
     queueSnapshot(m.id, done, world, steps, cloned);
   } else if (m.type === 'outlineStop') {
@@ -1553,7 +1567,7 @@ async function handle(m: Queued): Promise<void> {
     // 照原样打开的旧世界上预览新的大事:大事以后的地形只能按现在的版本生成,前后都按现在的版本算(和另存出来的新版一致),不拿两颗星球比
     const pinned = frozen;
     let out: ReturnType<typeof run>;
-    if (pinned && pinned.old && pinned.key === keyOf(m.params, m.terrain, m.sketch)) {
+    if (pinned && pinned.old && pinned.key === kOf(m.params, m.terrain, m.sketch)) {
       frozen = null;
       try {
         out = run();

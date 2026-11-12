@@ -43,7 +43,52 @@ export interface PlanetFrame {
   markA: number;
   /** 经纬网每隔几度一条(0 = 不画) */
   grid: number;
+  /** 太阳方向(球面光照用;不给 = 固定的默认方向) */
+  /** 太阳直射经度/纬度(弧度;球面晨昏线用) */
+  sunLon?: number;
+  sunLat?: number;
+  /** 星环(没有 = 不画) */
+  rings?: {
+    innerR: number;
+    outerR: number;
+    opacity: number;
+    color: [number, number, number];
+    gap: number;
+    gapAt: number;
+    tiltDeg: number;
+  } | null;
 }
+
+/** 星环:全屏四边形里按"环面反投影"算环的分布;球体先画好,这里做前后遮挡与半透明叠加 */
+const RING_VS = `
+attribute vec2 a_xy;
+varying vec2 v_px;
+uniform vec2 u_view;
+void main() {
+  v_px = (a_xy * 0.5 + 0.5) * u_view;
+  gl_Position = vec4(a_xy, 0.0, 1.0);
+}`;
+const RING_FS = `
+precision mediump float;
+varying vec2 v_px;
+uniform vec2 u_center, u_view;
+uniform float u_radius, u_tilt, u_inner, u_outer, u_opacity, u_gap, u_gapAt;
+uniform vec3 u_color;
+void main() {
+  vec2 p = (v_px - u_center) / u_radius;
+  float ct = max(0.06, cos(u_tilt));
+  float rho = length(vec2(p.x, p.y / ct));
+  if (rho < u_inner || rho > u_outer) discard;
+  float t = (rho - u_inner) / max(1e-4, u_outer - u_inner);
+  float gap = smoothstep(u_gap * 0.55, u_gap * 0.3, abs(t - u_gapAt));
+  float ringlets = 0.55 + 0.45 * sin(t * 190.0 + 1.7) * sin(t * 47.0);
+  float edge = smoothstep(0.0, 0.04, t) * (1.0 - smoothstep(0.95, 1.0, t));
+  float a = u_opacity * ringlets * edge * (1.0 - gap);
+  float z = -p.y * sin(u_tilt) / ct;
+  if (length(p) < 1.0 && z < 0.0) discard;
+  vec3 col = u_color * (0.72 + 0.35 * (1.0 - abs(t * 2.0 - 1.0)));
+  gl_FragColor = vec4(col * a, a);
+}`;
 
 function compile(gl: WebGLRenderingContext, vs: string, fs: string): WebGLProgram | null {
   const mk = (type: number, src: string) => {
@@ -97,6 +142,9 @@ export class PlanetGL {
   private nIndex: number;
   private tex = new Map<string, WebGLTexture>();
   private blank: WebGLTexture;
+  private ringProg: WebGLProgram | null = null;
+  private ringBuf: WebGLBuffer | null = null;
+  private ringU: Uniforms = {};
   private mark: WebGLTexture | null = null;
   private lost = false;
   onLost: (() => void) | null = null;
@@ -115,21 +163,28 @@ export class PlanetGL {
     // 经纬网的线宽按屏幕像素算(fwidth);没有这个扩展的老设备按缩放估
     gl.getExtension('OES_standard_derivatives');
     const prog = compile(gl, PLANET_VS, PLANET_FS);
+    const ringProg = compile(gl, RING_VS, RING_FS);
+    const ringBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, ringBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
     if (!prog) return null;
     try {
-      return new PlanetGL(gl, canvas, prog, !!opts.small);
+      return new PlanetGL(gl, canvas, prog, !!opts.small, ringProg, ringBuf);
     } catch {
       return null;
     }
   }
 
-  private constructor(gl: WebGLRenderingContext, canvas: HTMLCanvasElement, prog: WebGLProgram, small: boolean) {
+  private constructor(gl: WebGLRenderingContext, canvas: HTMLCanvasElement, prog: WebGLProgram, small: boolean, ringProg: WebGLProgram | null, ringBuf: WebGLBuffer | null) {
     this.gl = gl;
+    this.ringProg = ringProg;
+    this.ringBuf = ringBuf;
+    this.ringU = ringProg ? uniforms(gl, ringProg, ['u_center', 'u_view', 'u_radius', 'u_tilt', 'u_inner', 'u_outer', 'u_opacity', 'u_gap', 'u_gapAt', 'u_color']) : {};
     this.canvas = canvas;
     this.prog = prog;
     const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
     this.texW = small || maxTex < 4096 ? 1024 : 2048;
-    this.u = uniforms(gl, prog, ['u_s', 'u_m', 'u_k', 'u_tilt', 'u_c', 'u_view', 'u_a', 'u_b', 'u_mark', 'u_mix', 'u_lon', 'u_markA', 'u_grid', 'u_px', 'u_gridC']);
+    this.u = uniforms(gl, prog, ['u_s', 'u_m', 'u_k', 'u_tilt', 'u_c', 'u_view', 'u_a', 'u_b', 'u_mark', 'u_mix', 'u_lon', 'u_markA', 'u_grid', 'u_px', 'u_gridC', 'u_sunLon', 'u_sunLat']);
     this.mesh = planetMesh(PLANET_NX, PLANET_NY);
     gl.useProgram(prog);
     const buf = (data: Float32Array, name: string, usage: number) => {
@@ -301,10 +356,44 @@ export class PlanetGL {
     gl.uniform1i(u.u_mark, 2);
     gl.uniform1f(u.u_markA, this.mark ? f.markA : 0);
     // 经纬网:浅蓝白细线,线宽约 1.1 个 CSS 像素
+    gl.uniform1f(u.u_sunLon, f.sunLon ?? 0);
+    gl.uniform1f(u.u_sunLat, f.sunLat ?? 0);
     gl.uniform1f(u.u_grid, (f.grid * Math.PI) / 180);
     gl.uniform1f(u.u_px, Math.max(1, f.k * dpr));
     gl.uniform4f(u.u_gridC, 0.92, 0.95, 1.0, 1.1 * dpr);
     gl.drawElements(gl.TRIANGLES, this.nIndex, gl.UNSIGNED_SHORT, 0);
+    this.drawRings(f);
+  }
+
+  /** 画星环(没有环 / 没有程序时什么也不做) */
+  private drawRings(f: PlanetFrame): void {
+    const r = f.rings;
+    const prog = this.ringProg;
+    const buf = this.ringBuf;
+    if (!r || !prog || !buf) return;
+    const gl = this.gl;
+    const u = this.ringU;
+    gl.useProgram(prog);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    const loc = gl.getAttribLocation(prog, 'a_xy');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    gl.uniform2f(u.u_center, f.cx * this.dpr, f.cy * this.dpr);
+    gl.uniform2f(u.u_view, this.canvas.width, this.canvas.height);
+    gl.uniform1f(u.u_radius, Math.max(1, f.k * this.dpr));
+    gl.uniform1f(u.u_tilt, (r.tiltDeg * Math.PI) / 180);
+    gl.uniform1f(u.u_inner, r.innerR);
+    gl.uniform1f(u.u_outer, r.outerR);
+    gl.uniform1f(u.u_opacity, r.opacity);
+    gl.uniform1f(u.u_gap, r.gap);
+    gl.uniform1f(u.u_gapAt, r.gapAt);
+    gl.uniform3f(u.u_color, r.color[0] / 255, r.color[1] / 255, r.color[2] / 255);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.disable(gl.BLEND);
+    gl.enable(gl.DEPTH_TEST);
   }
 
   dispose(): void {

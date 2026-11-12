@@ -37,6 +37,8 @@ import { treatiesModule } from './treaties';
 import { migrationModule } from './migration';
 import { religionModule, type FaithEra } from './religion';
 import { interventionsModule, type InterventionModel } from './interventions';
+import { geoEventsModule } from './geoEvents';
+import { impactEventsModule } from './impactEvents';
 import type { Calamity } from './calamity';
 import { CIV_ANNALS, CIV_EVENTS } from './events';
 import { CIV_KNOBS } from './knobs';
@@ -114,6 +116,10 @@ export const CIV_MODULES: readonly CivModule[] = [
   migrationModule,
   religionModule,
   interventionsModule,
+  // 地质事件(默认不装:只有开了星球系或改了地质活跃度的世界才装,见 geoEvents.ts 文件头)
+  geoEventsModule,
+  // 陨星撞击(默认不装:只有开了星球系且小行星带/陨击频率开了的世界才装,见 impactEvents.ts 文件头)
+  impactEventsModule,
 ];
 
 /** 推到一半拼结果时往上补的次序(接着推要用的全精度状态) */

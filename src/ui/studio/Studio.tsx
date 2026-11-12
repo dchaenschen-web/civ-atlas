@@ -37,7 +37,7 @@
  * 没有 WebGL(或显卡丢了):中间一直是平常的平面地图;样式照样能换。
  * 系统设了"减少动态效果":地球仪不自转,换样式和投影只做很短的过渡。
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { World, WorldParams } from '../../gen/world';
 import { DEFAULT_PARAMS } from '../../gen/world';
 import type { Civ } from '../../gen/civ/types';
@@ -133,6 +133,30 @@ import { getCivFeed, subscribeCivFeed } from '../CivLayer';
 import { labelSurface } from '../../render/civ/labels';
 import type { LabelView } from '../../render/labels/draw';
 import { LEFT_W, RIGHT_W, appPose, flatRect } from './layout';
+import { SystemPage } from '../SystemPage';
+import { SystemEditor } from '../SystemEditor';
+import { currentSystem, setCurrentSystem } from '../../gen/systemState';
+import { EMPTY_OVERRIDES, type SystemOverrides } from '../../gen/astroDesign';
+import { listBodies, bodyCivByRef, bodiesOrDefault, setBodyCivs } from '../../gen/bodies';
+import { buildBodyViews } from '../../gen/bodyView';
+import { astroOf } from '../../gen/astro';
+import { namedBodies } from '../../gen/astroNames';
+import { beltsOf } from '../../gen/system';
+import { SystemGlobe } from '../SystemGlobe';
+import { SystemTimeline } from '../SystemTimelineView';
+import { subSystemGroupsOf } from '../../gen/systemGroups';
+import { skyLayerOf } from '../../gen/skyLayer';
+import { ringsOf } from '../../gen/rings';
+import { GlobeSky } from './GlobeSky';
+import { orbitYears } from '../../gen/astroDesign';
+import { yearsPerSecondOf } from '../systemClock';
+import { canHostCiv } from '../../gen/civilizable';
+import { bodyTexture, dropBodyTextures } from './bodyGlobe';
+import { planetSurface } from '../../gen/astroWorlds';
+import { createNamer } from '../../gen/names';
+import { applyOverrides, emptyOverrides } from '../../gen/system';
+import { styleKey as styleKeyOfLayer } from '../LayerPopover';
+import type { TerrainOp } from '../../gen/edits';
 import { flatGeom, getStudioFlat, keepStudioView, setStudioFlat, takeStudioView } from './studioStore';
 import { holdMark } from '../holdMark';
 import '../worlds.css';
@@ -183,6 +207,9 @@ const CAP_GAP = 34;
 /** 板块贴图的大小(找陆地最多的那一面用) */
 const PLATE_W = 1024;
 const PLATE_H = 512;
+
+// N8:地球仪视角的常驻观测层(点开地球仪才下载)
+const SkyLayerLazy = lazy(() => import('../SkyLayer').then((m) => ({ default: m.SkyLayer })));
 
 export interface StudioProps {
   phone: boolean;
@@ -346,7 +373,11 @@ export function Studio(p: StudioProps) {
   const sheetRef = useRef<HTMLElement>(null);
   const sceneRef = useRef<StudioScene | null>(null);
   const labRef = useRef<HTMLCanvasElement>(null);
+  /** R1-2:预览天体的地理标签画布(主行星标签层在预览时关闭) */
+  const previewLabRef = useRef<HTMLCanvasElement>(null);
   const pRef = useRef(p);
+  /** N12A:编辑器里的最新覆盖表(不重生成世界也要能预览) */
+  const sysEditOvRef = useRef<SystemOverrides>(EMPTY_OVERRIDES);
   pRef.current = p;
   /** 显卡:null = 还没试,false = 没有 / 丢了(退回平面地图) */
   const [glOk, setGlOk] = useState<boolean | null>(null);
@@ -361,6 +392,50 @@ export function Studio(p: StudioProps) {
   /** 照故事找的:种子、推演年数、拓荒、起源、天灾、规则锁着(改了历史就不是找到的那样) */
   const found = twoStep ? (p.found ?? null) : null;
   const step2 = locked || (twoStep && civStep);
+  /** 星系与天体弹层 / 星球系页(3D 系统预览) */
+  const [sysEditOpen, setSysEditOpen] = useState(false);
+  const [sysEditOv, setSysEditOv] = useState<SystemOverrides>(EMPTY_OVERRIDES);
+  const [systemPage, setSystemPage] = useState(false);
+  /** 步9:双击行星进地球仪时的缩放起点(舞台坐标;null = 不做转场) */
+  const [sysSelected, setSysSelected] = useState(0);
+  /** WP4:没有生物圈就不许创建文明(殖民/地球化留给科技树,见 gen/colonization.ts) */
+  const [civBlock, setCivBlock] = useState<string | null>(null);
+  const civCheck = useMemo(() => canHostCiv(p.data?.world ?? p.baseWorld ?? null), [p.data, p.baseWorld]);
+  const fixCivOrigin = () => {
+    setCivBlock(null);
+    p.onParams({ ...p.params, life: 1 });
+  };
+  /** WP7:单 stage —— 星系视角 / 地球仪视角,700ms 推进转场 */
+  const [sysStage, setSysStage] = useState<'system' | 'globe'>('globe');
+  /** 顶层三模式:星系(3D 场景)/ 地图(原版 Studio)/ 文明(天体文明) */
+  const [studioMode, setStudioMode] = useState<'galaxy' | 'map' | 'civ'>('galaxy');
+  /** 双击行星的缩放起点(舞台像素;null = 不缩放) */
+  /** 相机推进目标行星(null = 不推进) */
+  const [sysFocus, setSysFocus] = useState<number | null>(null);
+  /** 返回星系视角时"从哪颗行星拉远"(null = 不拉远) */
+  /** 切地球仪时星图留在后面淡出(减少硬切) */
+  const [sysGhost, setSysGhost] = useState(false);
+  /** 步13:文明面板 —— 打开状态、当前天体 id、推演结果 */
+  const [civOpen, setCivOpen] = useState(false);
+  const [civBodyId, setCivBodyId] = useState<string | null>(null);
+  const [civInfo, setCivInfo] = useState<{ id: string; viable: boolean; cultures: number; polities: number; settlements: number; endYear: number } | null>(null);
+  const [civBusy, setCivBusy] = useState(false);
+  /** 步13:每天体文明(内存;点"存进存档"才写 bodies) */
+  const [civStore, setCivStore] = useState<{ id: string; civs: unknown[] }[]>([]);
+  const [sysPullFrom, setSysPullFrom] = useState<number | null>(null);
+  /** US 式星图:各行星的小贴图(懒加载;生成一张塞一张,星图里直接画成球) */
+  const bodyTexRef = useRef<Map<number, HTMLCanvasElement>>(new Map());
+  const [bodyTexVersion, setBodyTexVersion] = useState(0);
+  /** R1-1:预览天体的样式缩略图(小尺寸 dataURL;非主行星时用它替换主行星缩略图) */
+  const [bodyThumb, setBodyThumb] = useState<string | null>(null);
+  const [sysZoomAt, setSysZoomAt] = useState<{ x: number; y: number } | null>(null);
+  const [sysFade, setSysFade] = useState(false);
+  /** 7C:现画非主行星地表时给加载态 */
+  const [bodyLoading, setBodyLoading] = useState(false);
+  /** N12A:从地球仪点「编辑这颗行星」进来时,编辑器先选中哪颗 */
+  const [sysEditFocus, setSysEditFocus] = useState<{ kind: 'planet'; planet: number } | null>(null);
+  /** N12A:覆盖表改完 +1,让预览贴图按新设计重算 */
+  const [bodyRev, setBodyRev] = useState(0);
   // ---- 规则:选的那一套、跟上「我的规则」里调过的 ----
   /**
    * 选的是「我的规则」里的哪一套(本机编号;null = 官方规则;undefined = 还没在这里选过,照修改里的那一套)。
@@ -1053,6 +1128,12 @@ export function Studio(p: StudioProps) {
     openAssistant();
   };
   const doCreate = async () => {
+    // WP4:没有生物圈就建不出文明(提示在左栏,这里再挡一次,防止绕过)
+    if (!civCheck.ok) {
+      setCivBlock(civCheck.reason ?? '主行星现在不适合孕育文明');
+      setConfirm(false);
+      return;
+    }
     setConfirm(false);
     // 编辑地形以后还在补推历史、起地名(照手绘图新建点「创建世界」时才开始的):等它起好再建(顶上提示条写着进度)
     while (pRef.current.naming) await new Promise((r) => setTimeout(r, 50));
@@ -1633,6 +1714,10 @@ export function Studio(p: StudioProps) {
   const heading = locked ? '打造文明' : base ? `以${base.title}为底稿新建` : image ? '照手绘图新建' : '新建世界';
   /** 第 1 步 → 第 2 步:改地形、助手、地名风格和起源那两页都收起;星球底下换一句提示 */
   const toCiv = () => {
+    if (!civCheck.ok) {
+      setCivBlock(civCheck.reason ?? '主行星现在不适合孕育文明');
+      return;
+    }
     setDrawer(null);
     setSeenOpen(null);
     if (tool.on) setTerrainTool({ on: false });
@@ -1697,6 +1782,54 @@ export function Studio(p: StudioProps) {
       onBlur={commitName}
     />
   );
+  /** 星系与天体…(每颗行星/卫星的轨道、地表参数与地形;只在建图这一步能改) */
+  const sysEditRow = (
+    <button className="sb-row" data-act="open-system-editor-studio" disabled={p.busy || !p.data} title="每颗行星/卫星的轨道、地表参数与地形;新建地图这一步改,建好以后这几项锁着" onClick={() => {
+        const ov = currentSystem() ?? EMPTY_OVERRIDES;
+        setSysEditOv(ov);
+        sysEditOvRef.current = ov;
+        setSysEditFocus(null);
+        setSysEditOpen(true);
+      }}>
+      <span className="sb-row-main">
+        <b>星系与天体…</b>
+      </span>
+      <span className="sb-row-side">{p.params.astro === 1 ? '已开' : '未开'}</span>
+      <Icon name="chevron" size={14} className="sb-chev" />
+    </button>
+  );
+
+  /** 星球系(3D 系统预览) */
+  const sysRow = (
+    <button className="sb-row" data-act="system-page" disabled={!p.data} onClick={() => setSystemPage(true)}>
+      <span className="sb-row-main">
+        <b>星球系</b>
+      </span>
+      <span className="sb-row-side">3D 预览</span>
+      <Icon name="chevron" size={14} className="sb-chev" />
+    </button>
+  );
+  /** 星系与天体弹层(改完落进当前世界的覆盖表) */
+  const sysEditDlg = sysEditOpen ? (
+    <SystemEditor
+      params={p.params}
+      overrides={sysEditOv}
+      focus={sysEditFocus ?? undefined}
+      onChange={(o) => {
+        setSysEditOv(o);
+        sysEditOvRef.current = o;
+      }}
+      onParams={(patch) => p.onParams({ ...p.params, ...patch })}
+      onClose={() => {
+        setCurrentSystem(sysEditOv);
+        setSysEditFocus(null);
+        setSysEditOpen(false);
+        // N12A:地形/地表/名字改了以后,预览贴图要按新覆盖表重画
+        dropBodyTextures();
+        setBodyRev((v) => v + 1);
+      }}
+    />
+  ) : null;
   const mixRow = (
     <button className="sb-row" data-act="name-mix" onClick={openNames}>
       <span className="sb-row-main">
@@ -1706,10 +1839,26 @@ export function Studio(p: StudioProps) {
       <Icon name="chevron" size={14} className="sb-chev" />
     </button>
   );
+  /** WP4 提示条:没有生物圈时挡住「打造文明」,并给一键修正 */
+  const civBlockNote = !civCheck.ok && !image && out === 0 && (
+    <div data-act="civ-block" style={{ margin: '6px 10px 0', padding: '7px 9px', borderRadius: 8, border: '1px solid rgba(192,112,112,0.5)', background: 'rgba(192,112,112,0.1)', fontSize: 11.5, lineHeight: 1.6 }}>
+      <b style={{ color: '#a4544f' }}>造不了文明：</b>
+      {civBlock ?? civCheck.reason ?? '主行星没有生物圈'}
+      <div style={{ marginTop: 5, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+        <button className="ov-btn" data-act="civ-fix" onClick={fixCivOrigin} style={{ padding: '0 6px', fontSize: 11.5 }}>
+          把主行星改成有生物圈
+        </button>
+        <span style={{ opacity: 0.6 }}>殖民 / 地球化改造等科技树（暂未开放）</span>
+      </div>
+    </div>
+  );
   const createBtn = (
-    <button className="nw-create" data-act="create-world" disabled={p.busy || !p.ready || out > 0 || importing || (image && !applied)} onClick={askCreate}>
+    <>
+      {civBlockNote}
+      <button className="nw-create" data-act="create-world" disabled={p.busy || !p.ready || out > 0 || importing || (image && !applied)} onClick={askCreate}>
       {base ? '创建新世界' : step2 ? (stepHow ? '开始演绎' : outlineHow ? '建好，先写大纲' : found ? `建好，停在第 ${found.year} 年` : '开始推演') : '创建世界'}
-    </button>
+      </button>
+    </>
   );
   /** 第 1 步底部:「保存地图」「打造文明 ›」 */
   const mapBtns = (
@@ -1728,6 +1877,402 @@ export function Studio(p: StudioProps) {
   /** 文明起源按第 0 年的州看(有地形大事时是大事以前的,见 origins.ts 的 originCiv) */
   const ogRaw = p.civ ?? p.raw;
   const ogCiv = ogRaw && originCiv(ogRaw);
+  /** 星球系页:看的世界(和文明起源页同一份) */
+  const sysWorld = p.baseWorld ?? p.data?.world ?? null;
+  const sysAstro = useMemo(() => (sysWorld ? astroOf(sysWorld) : null), [sysWorld]);
+  const sysNames = useMemo(() => (sysAstro && sysWorld ? namedBodies(sysAstro, sysWorld.params.seed, sysWorld.system) : null), [sysAstro, sysWorld]);
+  const sysBelts = useMemo(() => (sysAstro && sysWorld ? beltsOf(sysAstro.design, sysWorld.params.seed, sysWorld.params.impact) : []), [sysAstro, sysWorld]);
+  const STAGE_MS = reduce ? 0 : 700;
+/** 镜头推进时长(推到位再切到地球仪) */
+const ZOOM_MS = 520;
+  const SYS_END_YEAR = 200;
+  /** N6:星系视角的时间轴(1× = 主行星公转周期的 1/8 每秒) */
+  const [sysYear, setSysYear] = useState(0);
+  /** 步10:选中天体的"一年"是多少地球日(没有星系数据时按 365.25) */
+  const sysLocalYearDays = useMemo(() => {
+    const pl = sysAstro?.design.planets[sysSelected];
+    if (!pl) return 365.25;
+    try {
+      return Math.max(0.01, orbitYears(pl.a) * 365.25);
+    } catch {
+      return 365.25;
+    }
+  }, [sysAstro, sysSelected]);
+
+  /** 单一数据源:天体视图(名字/类型/文明都从这一份读,不再各取一处) */
+  const civBodyViews = useMemo(() => {
+    if (!sysAstro) return [];
+    try {
+      const ov = sysEditOvRef.current ?? pRef.current.data?.world.system;
+      return buildBodyViews(sysAstro, {
+        names: ov?.bodyNames ?? null,
+        defaultNames: sysNames ? { planets: sysNames.planets, moons: sysNames.moons } : null,
+        bodies: (pRef.current.data as { bodies?: import('../../gen/savefile').SaveBody[] } | null | undefined)?.bodies ?? null,
+      });
+    } catch {
+      return [];
+    }
+  }, [sysAstro, sysNames, bodyRev]);
+
+/** 地图模式左栏:选择要编辑/查看的天体 */
+const mapBodyPicker = sysAstro && civBodyViews.length ? (
+  <div className="sb-row" data-act="map-body-picker" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
+    <span style={{ opacity: 0.6, fontSize: 12 }}>天体</span>
+    <select
+      aria-label="选择要编辑的天体"
+      value={sysSelected}
+      onChange={(e) => { const i = Number(e.target.value); setSysSelected(i); setSysEditFocus({ kind: 'planet', planet: i }); setSystemPage(true); }}
+      style={{ flex: 1, fontSize: 12, padding: '2px 4px' }}
+    >
+      {civBodyViews.filter((v) => v.kind === 'planet').map((v) => (
+        <option key={v.id} value={Number(v.id.slice(1))}>{v.name} · {v.typeLabel}</option>
+      ))}
+    </select>
+  </div>
+) : null;
+
+  const sysYearsPerSec = sysAstro ? yearsPerSecondOf(orbitYears(sysAstro.design.planets[sysAstro.design.home.index].a)) : 1;
+  /** WP7-7B:地球仪看的是哪颗行星(非主行星 = 只读预览;-1 = 主行星) */
+  const homeBody = sysAstro?.design.home.index ?? -1;
+  const previewBody = sysAstro && sysStage === 'globe' && sysSelected !== homeBody ? sysSelected : -1;
+
+  const [zoomFrom, setZoomFrom] = useState<{ x: number; y: number } | null>(null);
+  /** 步6c:当前天体(行星/卫星)的星环,按质量判定;交给球面渲染器画 */
+  const ringsForGlobe = useMemo(() => {
+    if (!sysAstro) return null;
+    const pl = sysAstro.design.planets[sysSelected];
+    if (!pl) return null;
+    const seed = Math.round(pl.mass * 1000) + sysSelected * 7919;
+    return ringsOf({ mass: pl.mass, radius: pl.radius, kind: pl.kind, tilt: pl.tilt }, seed);
+  }, [sysAstro, sysSelected]);
+  useEffect(() => {
+    if (sceneRef.current) sceneRef.current.rings = ringsForGlobe;
+  }, [ringsForGlobe]);
+
+  /** 步9:球面晨昏线的太阳直射经度(按选中行星在时间轴那一刻算;经度交给着色器,球自转不影响晨昏线) */
+  const sunLonForGlobe = useMemo<number>(() => {
+    if (!sysAstro) return 0;
+    try {
+      const sky = skyLayerOf(sysAstro.design, sysYear, sysSelected);
+      return (sky.subsolarLonDeg * Math.PI) / 180;
+    } catch {
+      return 0;
+    }
+  }, [sysAstro, sysYear, sysSelected]);
+  useEffect(() => {
+    if (sceneRef.current) sceneRef.current.sunLon = sunLonForGlobe;
+  }, [sunLonForGlobe]);
+  /** 太阳直射纬度(赤纬):按行星自转倾角 × sin(公转位置角) 近似,供晨昏线用 */
+  const sunLatForGlobe = useMemo<number>(() => {
+    if (!sysAstro) return 0;
+    const pl = sysAstro.design.planets[sysSelected];
+    if (!pl) return 0;
+    try {
+      const sky = skyLayerOf(sysAstro.design, sysYear, sysSelected);
+      const theta = ((((sky.sunAzDeg + 180) % 360) + 360) % 360) * (Math.PI / 180);
+      return (pl.tilt * Math.sin(theta) * Math.PI) / 180;
+    } catch {
+      return 0;
+    }
+  }, [sysAstro, sysYear, sysSelected]);
+  useEffect(() => {
+    if (sceneRef.current) sceneRef.current.sunLat = sunLatForGlobe;
+  }, [sunLatForGlobe]);
+  /** 进地球仪:星系层缩放淡出,700ms 后切 stage */
+  /**
+   * 进地球仪。带点击坐标时做「镜头推进」:星系视角以点击点为中心放大,推到位再切地球仪(没有从中间淡入)。
+   */
+  const enterGlobe = (at?: { x: number; y: number; r: number }) => {
+    setSystemPage(false);
+    if (!at) {
+      setSysFade(true);
+      window.setTimeout(() => {
+        setSysStage('globe');
+        setSysFade(false);
+      }, STAGE_MS);
+      return;
+    }
+    setSysZoomAt({ x: at.x, y: at.y });
+    window.setTimeout(() => {
+      setSysStage('globe');
+      setSysFade(false);
+      setSysZoomAt(null);
+    }, ZOOM_MS);
+  };
+  /** 回星系视角 */
+  /** 回星系视角:相机从当前行星拉远(不是直接切画面) */
+  const backToSystem = () => {
+    setSysStage('system');
+    setSysPullFrom(sysSelected);
+  };
+  // 有星系数据、还没被切过时,先进星系视角
+  useEffect(() => {
+    if (sysAstro && !image && !locked && !p.base) setSysStage('system');
+  }, [sysAstro, image, locked, p.base]);
+  /** N8:当前选中行星所在子星系的其他成员(地球仪视角常驻观测层) */
+  const skySiblings = useMemo(() => {
+    if (!sysAstro || !sysNames) return [];
+    const groups = subSystemGroupsOf({
+      design: {
+        planets: sysAstro.design.planets.map((b) => ({ index: b.index, kind: b.kind, moons: b.moons })),
+        home: { index: sysAstro.design.home.index },
+        binary: sysAstro.design.binary,
+        habitableMoon: sysAstro.design.habitableMoon,
+      },
+      planetNames: sysNames.planets,
+      overrides: sysWorld?.system ?? null,
+    });
+    const g = groups.find((x) => x.planets.includes(sysSelected));
+    if (!g) return [];
+    const out: { index: number; name: string; kind: 'planet' | 'moon'; parent?: number }[] = [];
+    for (const i of g.planets) if (i !== sysSelected) out.push({ index: i, name: sysNames.planets[i] ?? '行星 ' + (i + 1), kind: 'planet' });
+    for (const k of g.moons[sysSelected] ?? []) out.push({ index: k, name: (sysNames.moons[sysSelected] ?? [])[k] ?? '卫星 ' + (k + 1), kind: 'moon', parent: k });
+    return out;
+  }, [sysAstro, sysNames, sysWorld, sysSelected]);
+  /** S3:开了星球系的新建世界,进来默认先给 3D 系统预览(只自动开一次,用户自己关掉后不再抢) */
+  const sysAutoOpened = useRef(false);
+  useEffect(() => {
+    if (sysAutoOpened.current || !sysAstro) return;
+    if (image || locked || p.base || tool.on) return;
+    sysAutoOpened.current = true;
+    // 步9:新建界面不再自动打开左侧「星球系」页(星系视角在中栏)
+  }, [sysAstro, image, locked, p.base, tool.on]);
+  // WP7-7B/7C:选中非主行星时把它的地表现画成贴图换上去(只读);选回主行星换回来
+  useEffect(() => {
+    if (studioMode !== 'map') return;
+    const sc = sceneRef.current;
+    const sh = shown.current;
+    if (!sc || !sh || gone.current || out) return;
+    if (!sysAstro || previewBody < 0) {
+      setBodyLoading(false);
+      if (!upload(sc, sh.tag, style)) return;
+      void sc.setStyle(`${sh.tag}:${style}`);
+      return;
+    }
+    setBodyLoading(true);
+    const timer = window.setTimeout(() => {
+      // N12A:覆盖表可能刚被编辑器改过(还没重生成世界),这里按覆盖表当场算一份有效设计
+      const ov = sysEditOvRef.current ?? pRef.current.data?.world.system ?? emptyOverrides();
+      const po = ov.planets.find((o) => o.index === previewBody);
+      // 覆盖表有两套同名类型(astroDesign 的宽松版 / gen/system 的严格版),这里按严格版用
+      const effective = applyOverrides(sysAstro.design, ov as unknown as Parameters<typeof applyOverrides>[1]);
+      const sysForBody = { ...sysAstro, design: effective };
+      const canvas = bodyTexture({
+        sys: sysForBody,
+        index: previewBody,
+        params: pRef.current.params,
+        styleKey: styleKeyOfLayer(style),
+        ops: po?.terrain as TerrainOp[] | undefined,
+        surface: po?.surface,
+        gen: po?.gen,
+      });
+      setBodyLoading(false);
+      const cur = sceneRef.current;
+      if (!canvas || !cur || gone.current) return;
+      const key = `body:${previewBody}:${styleKeyOfLayer(style)}:${sh.tag}`;
+      if (!cur.gl.hasStyle(key)) cur.gl.setStyle(key, canvas);
+      void cur.setStyle(key, 300);
+    }, 30);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewBody, style, sysAstro, out, bodyRev]);
+  // R1-2:预览天体的地理标签(最高峰/最大海/两个陆块;名字按该天体的种子取)
+  useEffect(() => {
+    const cv = previewLabRef.current;
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = cv.clientWidth || window.innerWidth;
+    const h = cv.clientHeight || window.innerHeight;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (previewBody < 0 || !sysAstro) return;
+    let gone = false;
+    const t = window.setTimeout(() => {
+      try {
+        const ov = sysEditOvRef.current ?? pRef.current.data?.world.system;
+        const po = ov?.planets.find((o) => o.index === previewBody);
+        const effective = applyOverrides(sysAstro.design, (ov ?? emptyOverrides()) as unknown as Parameters<typeof applyOverrides>[1]);
+        const sysForBody = { ...sysAstro, design: effective };
+        const world = planetSurface(sysForBody, previewBody, pRef.current.params, (po?.terrain as TerrainOp[]) ?? [], po?.surface, po?.gen);
+        if (gone) return;
+        const { mesh, water, elevation } = world;
+        // 地标:最高峰、最低海、两个大陆中心(按经度分布挑两块)
+        let peak = -1;
+        let deep = -1;
+        for (let i = 0; i < mesh.n; i++) {
+          if (water[i] !== 1 && elevation[i] > (peak < 0 ? -1e9 : elevation[peak])) peak = i;
+          if (water[i] === 1 && elevation[i] < (deep < 0 ? 1e9 : elevation[deep])) deep = i;
+        }
+        const namer = createNamer((pRef.current.params.seed + previewBody * 7919) >>> 0, 'kingdom');
+        const pick = (kind: string, key: number) => {
+          try {
+            return namer.keyed(kind as never, key, previewBody)().zh;
+          } catch {
+            return null;
+          }
+        };
+        const marks: { cell: number; text: string; big: boolean }[] = [];
+        if (peak >= 0) {
+          const nm = pick('mountain', peak);
+          if (nm) marks.push({ cell: peak, text: nm, big: false });
+        }
+        if (deep >= 0) {
+          const nm = pick('sea', deep);
+          if (nm) marks.push({ cell: deep, text: nm, big: true });
+        }
+        // 两个陆块:按经度分两半各取最高点
+        const camLon = sceneRef.current?.lon ?? 0;
+        const camTilt = 0.35;
+        const project = (cell: number): [number, number] | null => {
+          const lon = (mesh.x[cell] / mesh.width) * Math.PI * 2 - Math.PI;
+          const lat = Math.PI / 2 - (mesh.y[cell] / mesh.height) * Math.PI;
+          const cl = Math.cos(lat), sl = Math.sin(lat);
+          let nx = cl * Math.sin(lon + camLon);
+          let ny = sl;
+          let nz = cl * Math.cos(lon + camLon);
+          const ct = Math.cos(camTilt);
+          const st = Math.sin(camTilt);
+          const ny2 = ny * ct - nz * st;
+          const nz2 = ny * st + nz * ct;
+          if (nz2 <= 0.02) return null;
+          const r = Math.min(w, h) * 0.31;
+          return [w / 2 + nx * r, h / 2 - ny2 * r];
+        };
+        for (const m of marks) {
+          const xy = project(m.cell);
+          if (!xy) continue;
+          ctx.font = `${m.big ? 15 : 13}px system-ui, sans-serif`;
+          ctx.fillStyle = m.big ? 'rgba(200,222,255,0.9)' : 'rgba(226,230,240,0.85)';
+          ctx.shadowColor = 'rgba(0,0,0,0.65)';
+          ctx.shadowBlur = 3;
+          ctx.fillText(m.text, xy[0] + 6, xy[1] - 4);
+          ctx.shadowBlur = 0;
+        }
+      } catch {
+        /* 生成不出来就不画标签 */
+      }
+    }, 60);
+    return () => {
+      gone = true;
+      window.clearTimeout(t);
+    };
+  }, [previewBody, sysAstro]);
+  // 步13:按天体推演文明(行星/卫星都行;只推 alive 的天体)
+  useEffect(() => {
+    if (!civOpen || !sysAstro || !civBodyId) return;
+    let gone = false;
+    setCivBusy(true);
+    const t = window.setTimeout(() => {
+      try {
+        const ref = listBodies(sysAstro).find((b) => b.id === civBodyId);
+        if (!ref || !ref.alive) {
+          if (!gone) {
+            setCivInfo(null);
+            setCivBusy(false);
+          }
+          return;
+        }
+        const civ = bodyCivByRef(sysAstro, ref, pRef.current.params);
+        if (!gone) {
+          setCivInfo(civ ? { id: ref.id, viable: civ.viable, cultures: civ.cultures.length, polities: civ.polities.length, settlements: civ.settlements.length, endYear: Math.round(civ.endYear) } : null);
+          setCivBusy(false);
+        }
+      } catch {
+        if (!gone) {
+          setCivInfo(null);
+          setCivBusy(false);
+        }
+      }
+    }, 30);
+    return () => {
+      gone = true;
+      window.clearTimeout(t);
+    };
+  }, [civOpen, civBodyId, sysAstro]);
+  // R1-1:给预览天体生成样式缩略图(把 bodyTexture 缩到 96×48 存成 dataURL)
+  useEffect(() => {
+    if (previewBody < 0 || !sysAstro) {
+      setBodyThumb(null);
+      return;
+    }
+    let gone = false;
+    const t = window.setTimeout(() => {
+      try {
+        const ov = sysEditOvRef.current ?? pRef.current.data?.world.system;
+        const po = ov?.planets.find((o) => o.index === previewBody);
+        const effective = applyOverrides(sysAstro.design, (ov ?? emptyOverrides()) as unknown as Parameters<typeof applyOverrides>[1]);
+        const cv = bodyTexture({
+          sys: { ...sysAstro, design: effective },
+          index: previewBody,
+          params: pRef.current.params,
+          styleKey: 'realistic',
+          ops: po?.terrain as TerrainOp[] | undefined,
+          surface: po?.surface,
+          gen: po?.gen,
+        });
+        if (!cv || gone) return;
+        const small = document.createElement('canvas');
+        small.width = 96;
+        small.height = 48;
+        const c2 = small.getContext('2d');
+        if (!c2) return;
+        c2.drawImage(cv, 0, 0, 96, 48);
+        setBodyThumb(small.toDataURL('image/png'));
+      } catch {
+        setBodyThumb(null);
+      }
+    }, 40);
+    return () => {
+      gone = true;
+      window.clearTimeout(t);
+    };
+  }, [previewBody, sysAstro, bodyRev]);
+  // US 式星图:懒加载行星贴图(一次一颗,避免卡住主线程)
+  useEffect(() => {
+    if (sysStage !== 'system' || !sysAstro || image || locked) return;
+    let cancelled = false;
+    let timer = 0;
+    const ov = sysEditOvRef.current ?? pRef.current.data?.world.system;
+    const effective = applyOverrides(sysAstro.design, (ov ?? emptyOverrides()) as unknown as Parameters<typeof applyOverrides>[1]);
+    const sysForBody = { ...sysAstro, design: effective };
+    const list = effective.planets.map((pl, i) => i);
+    const step = (k: number) => {
+      if (cancelled || k >= list.length) return;
+      const i = list[k];
+      if (bodyTexRef.current.has(i)) {
+        step(k + 1);
+        return;
+      }
+      try {
+        const po = ov?.planets.find((o) => o.index === i);
+        const cv = bodyTexture({
+          sys: sysForBody,
+          index: i,
+          params: pRef.current.params,
+          styleKey: 'realistic',
+          ops: po?.terrain as TerrainOp[] | undefined,
+          surface: po?.surface,
+          gen: po?.gen,
+        });
+        if (cv) {
+          bodyTexRef.current.set(i, cv);
+          setBodyTexVersion((v) => v + 1);
+        }
+      } catch {
+        /* 这颗生成不出来就先留纯色点 */
+      }
+      timer = window.setTimeout(() => step(k + 1), 24);
+    };
+    timer = window.setTimeout(() => step(0), 120);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [sysStage, sysAstro, image, locked, bodyRev]);
   const ogShown = originsOn && !mixShown && !rpShown;
   const pageShown = mixShown || ogShown || rpShown;
   const mixPage = mixShown ? (
@@ -1816,6 +2361,9 @@ export function Studio(p: StudioProps) {
           {rulesRow}
           {originsRow}
           <div className="sk-name">{nameField}</div>
+          {sysEditRow}
+          {mapBodyPicker}
+          {sysRow}
           {mixRow}
         </>,
       )}
@@ -1910,6 +2458,8 @@ export function Studio(p: StudioProps) {
         <div className="sb-group">
           {seedRow}
           {!peek && paramsRow}
+          {!peek && sysEditRow}
+          {!peek && sysRow}
           {finderRow}
         </div>
         {!peek && noCivHint}
@@ -2052,16 +2602,26 @@ export function Studio(p: StudioProps) {
     );
   }
 
-  const thumb = (id: MapLayer) => p.thumbs[id];
-  const styleRows = STUDIO_STYLES.map((s) => (
+  // R1-1:主行星用 p.thumbs;预览其他天体时只用该天体的纹理(其他样式置灰,避免"看起来是主行星")
+  const isBodyPreview = previewBody >= 0;
+  const bodyStyleOnly = STUDIO_STYLES.filter((s) => s.id === 'realistic');
+  const thumbFor = (id: MapLayer) => (isBodyPreview ? (id === 'realistic' ? bodyThumb : null) : p.thumbs[id]);
+  const styleList = isBodyPreview ? bodyStyleOnly : STUDIO_STYLES;
+  const styleRows = styleList.map((s) => (
     <button key={s.id} className="sb-row st-opt" role="radio" aria-checked={style === s.id} data-style={s.id} onClick={() => pickStyle(s.id)}>
-      <span className="st-thumb" style={thumb(s.id) ? { backgroundImage: `url(${thumb(s.id)})` } : undefined} />
+      <span className="st-thumb" style={thumbFor(s.id) ? { backgroundImage: `url(${thumbFor(s.id)})` } : undefined} />
       <span className="sb-row-main">
         <b>{s.name}</b>
-        <small>{s.hint}</small>
+        <small>{isBodyPreview ? '预览天体的实景贴图(其他样式只适用于主行星)' : s.hint}</small>
       </span>
     </button>
   ));
+  // 预览天体时补一行说明:其余样式(地形/生态/气温…)是主行星的地图图层
+  const bodyStyleNote = isBodyPreview ? (
+    <div style={{ padding: '6px 10px', fontSize: 11.5, opacity: 0.6, lineHeight: 1.5 }}>
+      预览「{sysNames?.planets[previewBody] ?? '该天体'}」:样式只显示它自己的实景贴图;地形/生态/气温等图层属于主行星。
+    </div>
+  ) : null;
   const shownProj = tool.on || glOk === false ? 'equirect' : proj;
   const projRows = PROJS.map((x) => (
     <button
@@ -2136,6 +2696,8 @@ export function Studio(p: StudioProps) {
             <span>样式</span>
           </div>
           <div className="sb-group" role="radiogroup" aria-label="样式">
+              {bodyStyleNote}
+              {styleRows}
             {styleRows}
           </div>
           {p.phone && viewBtn}
@@ -2245,9 +2807,31 @@ export function Studio(p: StudioProps) {
   return (
     <div ref={rootRef} className={cls} data-theme="dark" data-hold={hold} style={p.phone ? ({ '--sheet-h': `${sheetH}px` } as React.CSSProperties) : undefined}>
       <div ref={glowRef} className="st-glow" aria-hidden="true" />
-      <canvas ref={glRef} className="st-gl" aria-label="这颗星球" />
-      <canvas ref={labRef} className={`st-labels${labOn && !tool.on && !out && glOk ? ' on' : ''}${p.namesIn ? ' names-in' : ''}`} aria-hidden="true" />
-      <canvas ref={markRef} className={`st-labels st-marks${markOn && astShown && !tool.on && !out && glOk ? ' on' : ''}`} data-marks={markOn && astShown ? marks.length : 0} aria-hidden="true" />
+      {sysAstro && !image && !locked && (
+        <div data-act="globe-sky-globe" aria-hidden="true" style={{ position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', opacity: out ? 0 : 1, transition: 'opacity .25s ease' }}>
+          <GlobeSky design={sysAstro.design} index={sysSelected} year={sysYear} seed={sysAstro.design.star.mass * 1000 + sysAstro.design.planets.length} />
+        </div>
+      )}
+      {/* 顶层三模式:星系 / 地图 / 文明 */}
+      {!image && !locked && (
+        <div data-act="studio-mode-switch" style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 70, display: 'flex', gap: 4, padding: 3, borderRadius: 10, background: 'rgba(16,22,34,0.82)', border: '1px solid rgba(120,150,200,0.28)' }}>
+          {([['galaxy', '星系'], ['map', '地图'], ['civ', '文明']] as const).map(([m, label]) => (
+            <button
+              key={m}
+              className="ov-btn"
+              data-act={`studio-mode-${m}`}
+              onClick={() => { setStudioMode(m); if (m === 'galaxy') { setSysStage('system'); setSysFade(false); } if (m === 'civ') { setCivOpen(true); if (!civBodyId) { const first = sysAstro ? listBodies(sysAstro).find((b) => b.alive) : null; if (first) setCivBodyId(first.id); } } }}
+              style={{ padding: '2px 12px', fontSize: 12, ...(studioMode === m ? { background: '#dbe6f7', color: '#0a0f1c', border: 0 } : { color: '#dbe6f7' }) }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      <canvas ref={glRef} className="st-gl" aria-label="这颗星球" style={studioMode !== 'map' ? { display: 'none' } : undefined} />
+      <canvas ref={labRef} className={`${studioMode !== 'map' ? ' hid-mode ' : ''}st-labels${labOn && !tool.on && !out && glOk && previewBody < 0 ? ' on' : ''}${p.namesIn ? ' names-in' : ''}`} aria-hidden="true" />
+      <canvas ref={previewLabRef} className={`st-labels st-preview-labels${previewBody >= 0 && !tool.on && !out && glOk ? ' on' : ''}`} aria-hidden="true" />
+      <canvas ref={markRef} className={`${studioMode !== 'map' ? ' hid-mode ' : ''}st-labels st-marks${markOn && astShown && !tool.on && !out && glOk && previewBody < 0 ? ' on' : ''}`} data-marks={markOn && astShown ? marks.length : 0} aria-hidden="true" />
       {pins}
       {(drawer || styOpen) && (
         <div
@@ -2258,7 +2842,33 @@ export function Studio(p: StudioProps) {
           }}
         />
       )}
-      {left}
+      {/* 星系模式左栏:星系树/天体编辑(实时改覆盖表) */}
+      {studioMode === 'galaxy' && !p.phone && sysAstro && (
+        <aside
+          className="st-left galaxy-dark"
+          data-act="galaxy-left"
+          style={{ position: 'absolute', left: 0, top: 48, bottom: 104, width: 600, zIndex: 55, background: 'rgba(14,19,30,0.94)', border: '1px solid rgba(120,150,200,0.22)', borderLeft: 0, borderRadius: '0 12px 12px 0', overflow: 'auto', padding: 10, color: '#dbe6f7', filter: 'none' }}
+        >
+          <SystemEditor
+            miniGlobe={false}
+            params={p.params}
+            overrides={sysEditOv}
+            focus={sysEditFocus ?? undefined}
+            onChange={(o) => {
+              setSysEditOv(o);
+              sysEditOvRef.current = o;
+            }}
+            onParams={(patch) => p.onParams({ ...p.params, ...patch })}
+            onClose={() => {
+              setCurrentSystem(sysEditOv);
+              setSysEditFocus(null);
+              dropBodyTextures();
+              setBodyRev((v) => v + 1);
+            }}
+          />
+        </aside>
+      )}
+      {studioMode === 'map' ? left : null}
       {!p.phone && (
         <button className="side-open glass st-pill" data-act="side-expand" aria-label={`展开侧栏:${heading}`} onPointerDown={stop} onClick={() => setCollapsed(false)}>
           <Icon name="sidebar" size={19} />
@@ -2268,7 +2878,7 @@ export function Studio(p: StudioProps) {
       {p.phone && !image && (
         <div className="st-ph-btns" onPointerDown={stop} onClick={stop}>
           <button className={`st-ph-btn${drawer === 'style' ? ' on' : ''}`} data-act="studio-style" aria-label="样式" aria-expanded={drawer === 'style'} onClick={() => setDrawer((d) => (d === 'style' ? null : 'style'))}>
-            <span className="st-thumb" style={thumb(style) ? { backgroundImage: `url(${thumb(style)})` } : undefined} />
+            <span className="st-thumb" style={thumbFor(style) ? { backgroundImage: `url(${thumbFor(style)})` } : undefined} />
           </button>
           <button className={`st-ph-btn${drawer === 'proj' ? ' on' : ''}`} data-act="studio-proj" aria-label="投影" aria-expanded={drawer === 'proj'} onClick={() => setDrawer((d) => (d === 'proj' ? null : 'proj'))}>
             <span className="st-shape">
@@ -2289,7 +2899,212 @@ export function Studio(p: StudioProps) {
           )}
         </div>
       )}
-      {right}
+      {/* 步9:星球系总览页(中栏全屏;左栏不再放预览) */}
+      {systemPage && sysWorld && !image && !locked && (
+        <div data-act="system-page-full" style={{ position: 'absolute', inset: 0, zIndex: 80, background: '#0a0f1c', color: '#dbe6f7', overflow: 'auto' }}>
+          <SystemPage backLabel={heading} onBack={() => setSystemPage(false)} world={sysWorld} civ={ogRaw} phone={p.phone} />
+        </div>
+      )}
+      {/* WP7:星系视角(单 stage;700ms 推进/返回) */}
+      {sysAstro && sysNames && !image && !locked && !p.base && (studioMode !== 'map' || sysStage === 'system' || sysGhost) && out === 0 && (
+        <div
+          data-act="stage-system"
+          style={{
+            position: 'absolute',
+            left: p.phone || studioMode !== 'map' ? 0 : (collapsed ? 0 : LEFT_W),
+            right: p.phone || studioMode !== 'map' ? 0 : (image ? 0 : RIGHT_W),
+            top: 0,
+            bottom: 0,
+            zIndex: 32,
+            background: '#0a0f1c',
+            color: '#dbe6f7',
+            display: 'flex',
+            flexDirection: 'column',
+            transformOrigin: sysZoomAt ? `${sysZoomAt.x}px ${sysZoomAt.y}px` : undefined,
+            transform: sysFade ? 'scale(1.35)' : 'scale(1)',
+            opacity: sysFade || sysGhost ? 0 : 1,
+            transition: 'transform ' + (sysZoomAt ? ZOOM_MS : STAGE_MS) + 'ms cubic-bezier(.3,.7,.4,1), opacity ' + STAGE_MS + 'ms ease',
+            pointerEvents: sysFade || sysGhost ? 'none' : 'auto',
+          }}
+        >
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: p.phone ? '8px 10px' : '10px 14px', flexWrap: 'wrap' }}>
+            <b style={{ fontSize: 14 }}>星系视角</b>
+            <span style={{ fontSize: 11.5, opacity: 0.6 }}>点一颗行星选中 · 双击进入地球仪 · 拖拽旋转 / 滚轮缩放</span>
+            <button className="ov-btn" data-act="stage-enter-globe" onClick={() => enterGlobe()} style={{ marginLeft: 'auto', color: '#0a0f1c', background: '#dbe6f7', border: 0 }}>
+              进入地球仪 ▸
+            </button>
+            <button className="ov-btn" data-act="stage-civ-bodies" onClick={() => { setCivOpen(true); if (!civBodyId && sysAstro) { const first = listBodies(sysAstro).find((b) => b.alive); if (first) setCivBodyId(first.id); } }} style={{ color: '#0a0f1c', background: '#cfe0ff', border: 0 }}>
+              天体文明…
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, padding: p.phone ? '0 6px' : '0 10px', overflow: 'auto' }}>
+            <div style={{ position: 'relative', width: '100%', height: '100%', minHeight: 260 }}>
+              {/* 步9:天球背景(附近恒星 + 同子星系的其他星体),球是透明的,星空在后面 */}
+              <GlobeSky
+                design={sysAstro.design}
+                index={sysSelected}
+                year={sysYear}
+                seed={sysAstro.design.star.mass * 1000 + sysAstro.design.planets.length}
+              />
+              {zoomFrom && (
+                <>
+                <style>{`@keyframes globeZoom { 0% { transform: scale(.25); opacity: 1 } 100% { transform: scale(26); opacity: 0 } }`}</style>
+                <div
+                  data-act="globe-zoom"
+                  style={{
+                    position: 'absolute',
+                    left: zoomFrom.x,
+                    top: zoomFrom.y,
+                    width: 36,
+                    height: 36,
+                    marginLeft: -18,
+                    marginTop: -18,
+                    borderRadius: '50%',
+                    background: 'radial-gradient(circle, rgba(190,220,255,0.95), rgba(120,170,255,0.25) 60%, rgba(0,0,0,0) 70%)',
+                    animation: 'globeZoom 600ms cubic-bezier(.3,.7,.4,1) forwards',
+                    pointerEvents: 'none',
+                    zIndex: 5,
+                  }}
+                />
+                </>
+              )}
+            <SystemGlobe
+              design={sysAstro.design}
+              names={sysNames.planets}
+              belts={sysBelts}
+              selected={sysSelected}
+              onSelect={setSysSelected}
+              onOpen={(i) => {
+                setSysSelected(i);
+                setSysFocus(i);
+              }}
+              focusIndex={sysFocus}
+              onFocusDone={() => {
+                // 星系模式:相机到位后留在同一个 3D 场景里(近处的球就是地表);不切地球仪
+                setSysFocus(null);
+              }}
+              startFocusIndex={sysPullFrom}
+              bodyTex={bodyTexRef.current}
+              onPullDone={() => {
+                setSysPullFrom(null);
+              }}
+              year={sysYear}
+              height="fill"
+            />
+            </div>
+          </div>
+          {civOpen && sysAstro && (
+            <div data-act="civ-bodies-panel" style={studioMode === 'civ' ? { position: 'absolute', left: 16, right: 16, top: 56, bottom: 16, maxHeight: 'none', overflow: 'auto', zIndex: 40, background: 'rgba(12,18,30,0.96)', color: '#dbe6f7', border: '1px solid rgba(120,150,200,0.35)', borderRadius: 10, padding: 16, fontSize: 13, lineHeight: 1.6 } : { position: 'absolute', right: p.phone ? 8 : 16, top: p.phone ? 54 : 60, width: 300, maxHeight: '70%', overflow: 'auto', zIndex: 40, background: 'rgba(12,18,30,0.96)', color: '#dbe6f7', border: '1px solid rgba(120,150,200,0.35)', borderRadius: 10, padding: 10, fontSize: 12.5, lineHeight: 1.55 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <b style={{ fontSize: 13 }}>天体文明</b>
+              <span style={{ opacity: 0.55, fontSize: 11 }}>选一个天体推演它的文明(只读预览)</span>
+              <button className="ov-btn" style={{ marginLeft: 'auto', padding: '0 6px' }} onClick={() => setCivOpen(false)}>关闭</button>
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+              {civBodyViews.map((b) => (
+                <button
+                  key={b.id}
+                  className="ov-btn"
+                  data-act={`civ-body-${b.id}`}
+                  disabled={!b.alive}
+                  title={b.alive ? '可住人:能推演文明' : '不适合居住:不推演文明'}
+                  onClick={() => setCivBodyId(b.id)}
+                  style={{ padding: '1px 7px', fontSize: 11.5, ...(civBodyId === b.id ? { borderColor: '#f0dc8c', color: '#f0dc8c' } : b.alive ? {} : { opacity: 0.4 }) }}
+                >
+                  {b.name}{b.kind === 'moon' ? '(卫)' : ''}
+                </button>
+              ))}
+            </div>
+            {civBusy && <div style={{ opacity: 0.7 }}>推演中…</div>}
+            {civBodyId && (() => { const v = civBodyViews.find((x) => x.id === civBodyId); return v ? (<div style={{ marginBottom: 6, opacity: 0.85 }}>当前:{v.name} · {v.typeLabel} · {v.kind === 'moon' ? '卫星' : '行星'}</div>) : null; })()}
+            {!civBusy && !civInfo && civBodyId && <div style={{ opacity: 0.7 }}>这个天体推不出文明(可居地太少或不能住人)。</div>}
+            {!civBusy && civInfo && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div>到第 <b>{civInfo.endYear}</b> 年:{civInfo.viable ? '文明存在' : '无成型文明(可居地太少)'}</div>
+                <div>民族 {civInfo.cultures} · 国家 {civInfo.polities} · 城镇 {civInfo.settlements}</div>
+                <div style={{ marginTop: 6, display: 'flex', gap: 6 }}>
+                  <button
+                    className="ov-btn"
+                    data-act="civ-body-save"
+                    style={{ padding: '0 8px', fontSize: 11.5 }}
+                    onClick={() => { setCivStore((cur) => { const next = cur.filter((x) => x.id !== civInfo.id); next.push({ id: civInfo.id, civs: [{ id: civInfo.id, endYear: civInfo.endYear }] }); return next; }); }}
+                  >
+                    记进"每天体文明"(下一步写存档)
+                  </button>
+                </div>
+                {civStore.length > 0 && <div style={{ opacity: 0.6, marginTop: 4 }}>已记 {civStore.length} 个天体:{civStore.map((x) => x.id).join('、')}</div>}
+              </div>
+            )}
+            </div>
+          )}
+          <div style={{ padding: p.phone ? '2px 8px' : '2px 12px' }}>
+            <SystemTimeline endYear={SYS_END_YEAR} year={sysYear} onYear={setSysYear} yearsPerSec={sysYearsPerSec} localYearDays={sysLocalYearDays} />
+          </div>
+          <div style={{ display: 'flex', gap: 6, padding: p.phone ? '6px 10px' : '8px 14px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: 11.5, opacity: 0.6 }}>行星</span>
+            {sysAstro.design.planets.map((pl, i) => (
+              <button
+                key={i}
+                data-act={'stage-pick-' + i}
+                className="ov-btn"
+                onClick={() => setSysSelected(i)}
+                onDoubleClick={(e) => { setSysSelected(i); enterGlobe({ x: e.clientX, y: e.clientY, r: 18 }); }}
+                style={{ padding: '1px 7px', fontSize: 11.5, ...(sysSelected === i ? { borderColor: '#f0dc8c', color: '#f0dc8c' } : { color: '#dbe6f7', borderColor: 'rgba(120,150,200,0.35)', background: 'rgba(14,22,38,0.7)' }) }}
+              >
+                {sysNames.planets[i] ?? '行星 ' + (i + 1)}
+                {i === sysAstro.design.home.index ? '★' : ''}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* 7B/7C:非主行星 = 只读预览;现画地表时显示加载态,并给「回到主行星」 */}
+      {previewBody >= 0 && sysNames && (
+        <div
+          data-act="body-preview-badge"
+          style={{ position: 'absolute', left: p.phone ? 12 : (collapsed ? 12 : LEFT_W + 12), top: p.phone ? 46 : 12, zIndex: 31, padding: '4px 10px', fontSize: 11.5, borderRadius: 7, border: '1px solid rgba(201,161,90,0.5)', background: 'rgba(40,32,14,0.78)', color: '#f0dc8c', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: p.phone ? 'calc(100% - 24px)' : 560 }}
+        >
+          <span>
+            {bodyLoading
+              ? '正在生成这颗行星的地表…'
+              : '预览：' + (sysNames.planets[previewBody] ?? '行星 ' + (previewBody + 1)) + '（只读；左侧设定仍作用在主行星）'}
+          </span>
+          <button
+            className="ov-btn"
+            data-act="body-preview-edit"
+            onClick={() => {
+              const ov = currentSystem() ?? EMPTY_OVERRIDES;
+              setSysEditOv(ov);
+              sysEditOvRef.current = ov;
+              setSysEditFocus({ kind: 'planet', planet: previewBody });
+              setSysEditOpen(true);
+            }}
+            style={{ padding: '0 6px', fontSize: 11, color: '#f0dc8c', borderColor: 'rgba(240,220,140,0.45)' }}
+          >
+            编辑这颗行星…
+          </button>
+          <button
+            className="ov-btn"
+            data-act="body-preview-home"
+            onClick={() => setSysSelected(homeBody)}
+            style={{ padding: '0 6px', fontSize: 11, background: 'rgba(240,220,140,0.18)', border: '1px solid rgba(240,220,140,0.45)', color: '#f0dc8c' }}
+          >
+            回到主行星
+          </button>
+        </div>
+      )}
+      {/* 地球仪视角:回到星系视角 */}
+      {sysAstro && !image && !locked && !p.base && sysStage === 'globe' && out === 0 && (
+        <button
+          data-act="stage-back-system"
+          onClick={backToSystem}
+          style={{ position: 'absolute', left: p.phone ? 12 : (collapsed ? 12 : LEFT_W + 12), top: 12, zIndex: 31, padding: '4px 10px', fontSize: 11.5, borderRadius: 7, border: '1px solid rgba(120,150,200,0.35)', background: 'rgba(14,22,38,0.72)', color: '#dbe6f7', cursor: 'pointer' }}
+        >
+          ← 回到星系视角
+        </button>
+      )}
+      {sysEditDlg}
+      {studioMode === 'map' ? right : null}
       {viewBar}
       {astShown && <AssistantPanel phone={p.phone} world={p.data!.world} raster={p.data!.raster} civ={p.civ!} raw={p.raw!} lock="history" busy={p.worldBusy} />}
       {seenOpen && (

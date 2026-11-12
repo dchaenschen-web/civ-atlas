@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 新建世界的「预设」(新建弹窗第 2 步最上面、新建页左边「世界参数」里;两边是同一份):
  *
  *   默认      DEFAULT_PARAMS(种子照旧随机)
@@ -11,7 +11,7 @@
  */
 import { createListeners } from './createStore';
 import { PARAM_RANGE } from '../gen/savefile';
-import { DEFAULT_PARAMS, type WorldParams } from '../gen/params';
+import { DEFAULT_PARAMS, type BaseParamKey, type WorldParams } from '../gen/params';
 import { contBrief } from './genesisSliders';
 import { cleanRuleSet, type RuleSet } from '../gen/civ/ruleSet';
 
@@ -70,7 +70,7 @@ function cleanParams(x: unknown): PresetParams {
   for (const k of Object.keys(out)) {
     const v = o[k];
     // 和读存档一样:超出合理范围的调回范围内(浏览器里存的东西可能被改坏)
-    const [lo, hi] = PARAM_RANGE[k as keyof WorldParams];
+    const [lo, hi] = PARAM_RANGE[k as BaseParamKey];
     if (typeof v === 'number' && Number.isFinite(v)) out[k] = Math.min(hi, Math.max(lo, v));
   }
   return out as unknown as PresetParams;

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 生成新世界、打开世界(App 用;线程交回的生成、打开那几种消息见 ./worldMessages.ts):
  *   - generate      打开一个世界:存过内容的读存的(worldOpen.ts;世界记的版本比现在旧 = 照原样打开),读不了退回旧的路(旧版本的读原件,再不行按参数、地形修改生成);
  *                   世界比这个页面还新、地图留着的世界读不出:回我的世界说一声(failOpen),世界不动;
@@ -10,6 +10,7 @@
  * App 的状态按块传进来(见 ./worldRefs.ts);这里的函数每次渲染新建(和原来写在 App 里一样),generate 只建一次。
  * App 里在这个 hook 后面才定义的几样(回我的世界、打开作品、作品墙、后退前进;前几样在 ./useWorldPages.ts)经 later 调
  */
+import { systemOpt } from '../../gen/systemState';
 import { useCallback, useEffect, useRef } from 'react';
 import type { LoadRequest, WorkerRequest } from '../../worker';
 import type { World, WorldParams } from '../../gen/world';
@@ -286,7 +287,7 @@ export function useWorldLoad(deps: WorldLoadDeps) {
       // 新建的世界能编辑地形:线程留着整张主图,第一笔就能只重铺变了的那块。
       // 新建界面先看的是地图(星球),推几千年的历史比生成地形、铺像素慢:地图先交、先换上,历史随后(mapFirst);
       // 写实画风的整张像素层也让线程画好随地图交来(paint),换上之前主线程不用自己再分小步画
-      const req: WorkerRequest = { type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch, ...namesOpt(t.edits.nameMix), ...yearsOpt(civYears.current), ...setupOpt(civSetup.current), ...(t.kind === 'draft' ? { keep: true, mapFirst: true as const, paint: paintLooks(drawKey.current, mapViewRef.current.sat) } : {}), renames: t.edits.names, characters: t.edits.characters };
+      const req: WorkerRequest = { type: 'generate', id, params: p, scale: 1, terrain: [...terrain], sketch: t.edits.sketch, ...systemOpt(), ...namesOpt(t.edits.nameMix), ...yearsOpt(civYears.current), ...setupOpt(civSetup.current), ...(t.kind === 'draft' ? { keep: true, mapFirst: true as const, paint: paintLooks(drawKey.current, mapViewRef.current.sat) } : {}), renames: t.edits.names, characters: t.edits.characters };
       mapFirst.current = null;
       setMapEarly(false);
       frozenLoad.current = null;

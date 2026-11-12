@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 插件提的「改你写的东西」:改名、加标记、下干预。一次调用的整批先套在现在的修改上算好,有一条不合格整批不改;
  * 合格的由网站照办,整批记一步撤销。查的只是改完的世界能存、能打开,不替用的人判断改得对不对。
  */
@@ -18,6 +18,7 @@ import {
   type WorldEdits,
 } from '../gen/edits';
 import { makeSave, saveText, SAVE_MAX_BYTES } from '../gen/savefile';
+import { currentSystem } from '../gen/systemState';
 import type { WorldParams } from '../gen/world';
 import { argsOf, bad, isRec, list, over, PluginApiError } from './check';
 import { approxBytes } from './protocol';
@@ -117,6 +118,6 @@ export function planChanges(edits: WorldEdits, civ: Civ | null, raw: unknown, pa
   if (aiNames) next.aiNames = aiNames;
   else delete next.aiNames;
   if (marks.length) next.marks = marks;
-  if (saveText(makeSave(params, next, '')).length > SAVE_MAX_BYTES - SAVE_ROOM) over('改完以后存档太大,存不下');
+  if (saveText(makeSave(params, next, '', undefined, undefined, undefined, undefined, currentSystem())).length > SAVE_MAX_BYTES - SAVE_ROOM) over('改完以后存档太大,存不下');
   return { next, result, keys };
 }

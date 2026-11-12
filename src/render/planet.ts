@@ -143,6 +143,8 @@ attribute vec2 a_ll;
 attribute vec2 a_pa;
 attribute vec2 a_pb;
 uniform float u_s, u_m, u_k, u_tilt;
+uniform float u_lon;
+uniform float u_sunLon, u_sunLat;
 uniform vec2 u_c, u_view;
 varying vec2 v_ll;
 varying float v_light;
@@ -165,7 +167,8 @@ void main() {
   vec3 d = q - c;
   q = vec3(d.x, d.y * ct - d.z * st, d.y * st + d.z * ct) + c;
   n = vec3(n.x, n.y * ct - n.z * st, n.y * st + n.z * ct);
-  vec3 L = normalize(vec3(-0.45, 0.5, 0.75));
+  float sunLon = u_sunLon - u_lon;
+  vec3 L = normalize(vec3(cos(u_sunLat) * sin(sunLon), sin(u_sunLat), cos(u_sunLat) * cos(sunLon)));
   float lam = max(dot(n, L), 0.0);
   float limb = 0.6 + 0.4 * smoothstep(0.0, 0.55, n.z);
   v_light = mix(1.0, (0.38 + 0.78 * lam) * limb, u_m);

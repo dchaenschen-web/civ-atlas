@@ -1641,3 +1641,14 @@
   font-size: 12.5px;
   color: var(--ink-2);
 }
+
+/* 非「地图」模式:隐藏主地图的标注/标记层(星系/文明模式不加载地图资源) */
+.hid-mode { opacity: 0 !important; pointer-events: none !important; }
+
+/* 星系模式左栏:嵌入的星系/天体编辑器改成暗色,和 3D 背景一致 */
+.galaxy-dark, .galaxy-dark * { color: #dbe6f7 !important; }
+.galaxy-dark { background: rgba(14,19,30,0.94) !important; }
+.galaxy-dark input, .galaxy-dark select, .galaxy-dark textarea { background: rgba(255,255,255,0.08) !important; border-color: rgba(150,175,215,0.35) !important; color: #e8eef9 !important; }
+.galaxy-dark .ov-btn { background: rgba(255,255,255,0.08) !important; border: 1px solid rgba(150,175,215,0.32) !important; color: #dbe6f7 !important; }
+.galaxy-dark button:not(.ov-btn) { background: transparent; }
+.galaxy-dark [data-act="system-tree"] { border-right: 1px solid rgba(150,175,215,0.22) !important; }

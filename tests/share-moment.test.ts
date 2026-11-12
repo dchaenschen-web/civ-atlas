@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 分享链接里的"打开时看哪"(gen/savefile.ts 的 moment):种子 7、2024 第 1500 年 + 选中一国 + 镜头 → 链接 → 读回来逐字段相等、
  * 对到生成好的历史上就是那一国;旧链接(没有这个字段)读出来和以前一样;坏字段(年份超出、国家不存在、不是数)安全忽略。
  */
@@ -107,7 +107,7 @@ describe('打开时看哪:旧链接照常', () => {
         format: 1,
         generator: 24,
         seed: 7,
-        params: { seed: 7, cells: 36000, landFraction: 0.33, plates: 30, mountains: 1, temperature: 0, rainfall: 1, continents: 0, gather: 0, rugged: 1, hardness: 1, north: 0 },
+        params: { ...DEFAULT_PARAMS, seed: 7 },
         edits: { names: { 'polity:c32577#0': '大桑' }, interventions: [{ kind: 'protect', a: 'polity:c32577#0', from: 1200 }], terrain: [] },
         check: '0123456789ab',
         savedAt: '2026-10-20T08:00:00.000Z',
@@ -122,7 +122,7 @@ describe('打开时看哪:旧链接照常', () => {
         format: 1,
         generator: 24,
         seed: 2024,
-        params: { seed: 2024, cells: 36000, landFraction: 0.4, plates: 30, mountains: 1, temperature: 0, rainfall: 1, continents: 0, gather: 0, rugged: 1, hardness: 1, north: 0 },
+        params: { ...DEFAULT_PARAMS, seed: 2024, landFraction: 0.4 },
         edits: { names: { 'region:c8123': '雁门郡' }, interventions: [], terrain: [] },
         check: 'ba9876543210',
         savedAt: '2026-10-20T09:30:00.000Z',

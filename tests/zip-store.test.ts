@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+﻿import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +18,14 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zip-store-'));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 /** 这台机器上有没有这个软件(CI 和各人电脑上不一定都有) */
 const has = (cmd: string) => spawnSync(cmd, ['--help'], { stdio: 'ignore' }).error === undefined;
+/** zip 真的能按这里的用法打出一个包吗(本机 MiKTeX 自带的那份 zip 会失败,不能只看有没有这个命令) */
+const zipWorks = (() => {
+  if (!has('zip')) return false;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'zip-probe-'));
+  fs.writeFileSync(path.join(dir, 'x.txt'), 'x');
+  const r = spawnSync('zip', ['-0', '-q', path.join(dir, 'x.zip'), 'x.txt'], { cwd: dir });
+  return r.status === 0;
+})();
 
 const SAMPLE = [
   { name: 'manifest.json', data: text('{"kind":"world"}') },
@@ -253,7 +261,7 @@ for path, kind in ((sys.argv[2], zipfile.ZIP_STORED), (sys.argv[3], zipfile.ZIP_
     expect(() => parseZip(new Uint8Array(fs.readFileSync(deflated)))).toThrow('不压缩');
   });
 
-  it.skipIf(!has('zip'))('zip -0 打的(带额外字段)读得回来', () => {
+  it.skipIf(!zipWorks)('zip -0 打的(带额外字段)读得回来', () => {
     fs.writeFileSync(path.join(tmp, 'plain.txt'), 'hello zip');
     const file = path.join(tmp, 'by-zip.zip');
     const r = spawnSync('zip', ['-0', '-q', file, 'plain.txt'], { cwd: tmp });

@@ -16,6 +16,7 @@
 import type { World } from './world';
 import { annualRange, CONT_GH, CONT_GW, continentalityAt, continentalityGrid } from './koppen';
 import { round24 } from './civ/engine/rand';
+import { astroOf } from './astro';
 
 /** 年内气温估算的版本:算法变了加一 */
 export const YEAR_CLIMATE_VERSION = 1;
@@ -44,9 +45,12 @@ export function yearClimate(world: World): YearClimate {
   const cont = continentalityGrid(landGrid(world));
   const half = new Float32Array(n);
   const coldest = new Float32Array(n);
+  // 星球系:倾角越大,年较差越大(地球基线 23.5° → 1,世界和以前逐字节一样)
+  const sys = astroOf(world);
+  const strength = sys ? sys.home.tilt / 23.5 : SEASON_STRENGTH;
   for (let c = 0; c < n; c++) {
     const lat = 90 - (180 * mesh.y[c]) / height;
-    half[c] = (SEASON_STRENGTH * annualRange(lat, continentalityAt(cont, mesh.x[c] / width, mesh.y[c] / height))) / 2;
+    half[c] = (strength * annualRange(lat, continentalityAt(cont, mesh.x[c] / width, mesh.y[c] / height))) / 2;
     coldest[c] = lat < 0 ? COLDEST_NORTH + 0.5 : COLDEST_NORTH;
   }
   const yc: YearClimate = { mean: temperature, half, coldest };

@@ -190,6 +190,13 @@ export const enum Ev {
   TrekStep = 64,
   /** 落脚(migration.ts):不单独预约,是大迁徙落脚的几州改换成迁来的民族时变化日志记的原因 */
   TrekSettle = 65,
+  /**
+   * 看地质(geoEvents.ts):按板块边界的活跃度掷地震 / 火山。只在开了星球系或改了地质活跃度的世界才装;
+   * 默认参数的世界不装这个模块,历史逐字节不变
+   */
+  GeoCheck = 66,
+  /** 看陨星撞击(impactEvents.ts):C 方案——推演里只记效应,地形结算在推演后。默认不装 */
+  ImpactCheck = 67,
 }
 
 /**
@@ -255,6 +262,8 @@ export const CIV_EVENTS: readonly EventKind[] = [
   { id: Ev.TrekCheck, name: '看大迁徙', watch: false },
   { id: Ev.TrekStep, name: '迁徙的队伍', watch: false },
   { id: Ev.TrekSettle, name: '迁徙落脚', watch: false },
+  { id: Ev.GeoCheck, name: '看地质', watch: false, order: { earlyEnd: 6 } },
+  { id: Ev.ImpactCheck, name: '看陨星', watch: false, order: { earlyEnd: 7 } },
   // 迁都后重看边地:原来没写进这张表(核对版本号 = 否,和没登记时一样),同一刻里按国家排的次序要登记在这里
   { id: Ev.Respread, name: '迁都后重看边地', watch: false, order: { perPolity: 2 } },
 ];

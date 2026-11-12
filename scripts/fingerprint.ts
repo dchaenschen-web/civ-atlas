@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界指纹对账:一批种子 × 参数(含改地形、干预)下,地形、文明、铺像素、回放帧、编年史的**全部数据**逐字段算指纹。
  * 纯重构(结果应当逐字节不变)时用:先在 main 上存一份,再在分支上对账。
  *
@@ -16,6 +16,9 @@ import { rasterize } from '../src/gen/raster';
 import { buildHistoryFrames } from '../src/gen/history';
 import { buildChronicle } from '../src/gen/civ/story/chronicle';
 import { polityKey, regionKey, settlementKey, type Intervention, type TerrainOp } from '../src/gen/edits';
+
+/** 星球系/地质那一版新加的参数键(对账时去掉) */
+const NEW_PARAM_KEYS = ['astro', 'system', 'planets', 'gas', 'moons', 'tilt', 'rotation', 'geo', 'mag', 'tech', 'arch', 'life', 'home', 'salt', 'impact'];
 
 const f64 = new Float64Array(1);
 const f64b = new Uint8Array(f64.buffer);
@@ -147,7 +150,16 @@ function fingerprint(c: Case): Record<string, string> {
     out['interventions'] = print(list);
     civ = generateCiv(w, { interventions: list });
   }
-  for (const k of Object.keys(w).sort()) out[`world.${k}`] = print((w as unknown as Record<string, unknown>)[k]);
+  for (const k of Object.keys(w).sort()) {
+    // 这一版给 WorldParams 加了新键、给 climate 加了 mods(派生字段):土地形、气候、文明的数据一个没变,
+    // 对账时去掉,金标照旧——这正好是"新参数没有改动任何数"的证明
+    let v = (w as unknown as Record<string, unknown>)[k];
+    if (k === 'params') {
+      v = { ...(v as Record<string, unknown>) };
+      for (const nk of NEW_PARAM_KEYS) delete (v as Record<string, unknown>)[nk];
+    }
+    out[`world.${k}`] = print(v);
+  }
   for (const k of Object.keys(civ).sort()) out[`civ.${k}`] = print((civ as unknown as Record<string, unknown>)[k]);
   out['chronicle'] = print(buildChronicle(civ));
   const r = rasterize(w);

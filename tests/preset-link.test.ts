@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 预设做成分享链接(ui/presetLink.ts):预设 → 链接 → 预设逐字段相等;链接有多长;
  * 折了行、转义过的照样读;坏的参数调回范围内并提示;不是预设链接、少了一截、来自更新版本的给中文错误;
  * 连规则一起的:写成第 2 版、规则逐字段读回来;第 1 版后面接着规则的写法也读得出规则。
@@ -24,7 +24,34 @@ const SAMPLES: SharedPreset[] = [
   // 每一样都改过、名字带空格和符号(& = # % + 都要转义)
   {
     name: 'A & B = 50% #1 + 北境',
-    params: { cells: 120000, landFraction: 0.123456789, plates: 64, mountains: 4.75, temperature: -39.5, rainfall: 0.05, continents: 8, gather: 1, rugged: 2.5, hardness: 0.3, north: -1 },
+    params: {
+      cells: 120000,
+      landFraction: 0.123456789,
+      plates: 64,
+      mountains: 4.75,
+      temperature: -39.5,
+      rainfall: 0.05,
+      continents: 8,
+      gather: 1,
+      rugged: 2.5,
+      hardness: 0.3,
+      north: -1,
+      astro: 1,
+      system: 5,
+      planets: 6,
+      gas: 4,
+      moons: 4,
+      tilt: 79.5,
+      rotation: 199,
+      geo: 2.9,
+      mag: 1.9,
+      tech: 2,
+      arch: 3,
+      life: 2,
+      home: 6,
+      salt: 999,
+      impact: 2,
+    },
     seed: 999999,
     endYear: 60000,
   },
@@ -51,8 +78,8 @@ describe('预设链接:编码 → 解码', () => {
 
   it('链接长度:只写和默认不一样的几样,远小于提醒"链接较长"的 8000 字', () => {
     const lens = SAMPLES.map((p) => (SITE + presetHash(p)).length);
-    // 两块完整大陆 135 字、寒冷群岛(带种子、推演年数)178 字、默认 58 字、样样都改过 259 字
-    expect(lens).toEqual([135, 178, 58, 259]);
+    // 两块完整大陆 135 字、寒冷群岛(带种子、推演年数)178 字、默认 58 字、样样都改过(含星球系九样 + 技术路线)346 字
+    expect(lens).toEqual([135, 178, 58, 385]); // 385 = 全部参数都改过(含 arch/life/home/salt/impact 五个新参数)
     for (const n of lens) expect(n).toBeLessThan(SHARE_WARN_LENGTH);
     // 默认的那几样不写
     expect(presetHash(SAMPLES[0])).toBe('#preset=1&name=%E4%B8%A4%E5%9D%97%E5%AE%8C%E6%95%B4%E5%A4%A7%E9%99%86&landFraction=0.4&continents=2&gather=0.5');

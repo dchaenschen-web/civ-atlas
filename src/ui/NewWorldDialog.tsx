@@ -1,11 +1,11 @@
-/**
+﻿/**
  * 「新建世界」的两步弹窗(在「我的世界」点「新建世界」时弹):
  *
  *   第 1 步  怎么生成:随机生成 / 照手绘图生成(两张带图的卡片,默认随机;双击一张 = 选它并下一步)。
  *            选好以后进新建界面,两种不能互换
  *   第 2 步  基础参数(就是新建界面「世界参数」那几样,默认值不变)。随机的有种子(随机给一个,能换);
  *            照图的先选一张图(拖进来或「选一张图」),不列陆地比例(海陆照图定),种子随机给,进去以后在「山河、地名换一种」里换。
- *            照图的「精细度」下面一组「拓荒」:民族扩散、国家扩张两条滑条(默认 1×),「地形难走程度」一行点开原地展开八样地形
+ *            照图的「精细度」下面一组「拓荒」:民族扩散、国家扩张两条滑条(默认 1Ã—),「地形难走程度」一行点开原地展开八样地形
  *            (改过的数字变成强调色、前面一个圆点;「恢复默认」一下还原),组下面一段说明。
  *            最后一组「历史」:开关「推演超过 3000 年」(默认关),组下面一直写着那段说明;开了多一条「推演到」(刚打开 10000 年)。
  *            随机生成的不列「拓荒」「历史」(先只做地图,这两样在新建界面第 2 步「打造文明」里定)。
@@ -23,11 +23,14 @@
  * 电脑上是浮在页面正中的窗口(第 2 步比窗口高时:标题和底部按钮不动,中间一段自己滚,上下各一条细线隔开);
  * 手机上从底部升起、几乎占满屏:顶上一排(取消 / 上一步、标题、第几步),底部一个大按钮。
  */
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, Suspense, lazy, useEffect, useRef, useState } from 'react';
 import type { WorldParams } from '../gen/world';
+import type { BaseParamKey } from '../gen/params';
 import { CONT_SLIDERS, SLIDERS, YEARS_NOTE, YEARS_ON, YEARS_SLIDER, YEARS_SWITCH, contBrief, type SliderLike } from './genesisSliders';
-import { CONT_RESET, ContinentSeg, ParamField, rangeFill } from './ParamField';
+import { CONT_RESET, ContinentSeg, OptionRow, ParamField, rangeFill } from './ParamField';
 import { createPortal } from 'react-dom';
+import type { SystemOverrides } from '../gen/astroDesign';
+import { setCurrentSystem } from '../gen/systemState';
 import { PresetPicker, SavePreset, type PresetPick } from './PresetPicker';
 import { changedKeys, choiceParams, getPresets, usePresets, type SharedPreset } from './presetStore';
 import { terrainChangedCount, type Frontier } from '../gen/civ/frontier';
@@ -93,7 +96,7 @@ const CARDS: { mode: NewWorldMode; name: string; desc: string }[] = [
 ];
 
 /** 第 2 步的几组参数:组名、组名右边一句(电脑上)、哪几样;「大陆」一组另外写(只有随机生成有) */
-function groups(mode: NewWorldMode): { name: string; note?: string; keys: (keyof WorldParams)[] }[] {
+function groups(mode: NewWorldMode): { name: string; note?: string; keys: BaseParamKey[] }[] {
   return [
     mode === 'random'
       ? {
@@ -108,6 +111,7 @@ function groups(mode: NewWorldMode): { name: string; note?: string; keys: (keyof
           keys: ['plates', 'mountains', 'hardness'],
         },
     { name: '气候', keys: ['temperature', 'rainfall'] },
+    // 星系、行星、卫星的一切(含地表参数与地形)都收在「星系与天体…」那一棵树里,这里不再摆滑条
     { name: '精细度', note: '越精细越慢', keys: ['cells'] },
   ];
 }
@@ -124,6 +128,17 @@ function ParamRow({ s, value, onChange, phone, sub, changed }: { s: SliderLike; 
   const k = s.key;
   const [err, setErr] = useState<string | null>(null);
   const name = k === 'cells' ? '地块' : s.name;
+
+  // 有具体名字的几档(恒星类型/构型/生命/撞击频率):不摆滑条,摆成分段选项
+  if (s.options) {
+    return (
+      <div className={`nd-pr nd-pr-opt${sub ? ' sub' : ''}`} title={s.hint} data-param={k}>
+        <span className="nd-n">{name}</span>
+        <OptionRow s={s} value={value} onCommit={onChange} />
+      </div>
+    );
+  }
+
   return (
     <>
       <label className={`nd-pr${sub ? ' sub' : ''}${err ? ' has-err' : ''}`} title={s.hint} data-param={k}>
@@ -156,11 +171,15 @@ function startParams(randomSeed: () => number): {
 } {
   const c = choiceParams(getPresets(), getPresets().chosen);
   return {
-    params: { ...c.params, seed: c.seed ?? randomSeed() },
+    // 新世界默认开星球系,并且主行星默认有生物圈(保证可呼吸;想改在「星球系」一组里调)
+    params: { ...c.params, astro: 1, life: 1, seed: c.seed ?? randomSeed() },
     endYear: c.endYear,
     rules: c.rules,
   };
 }
+
+/** 星系结构编辑器按需加载:首页只带一个按钮,编辑器(和它引的星系/命名代码)在打开时才下 */
+const LazySystemEditor = lazy(() => import('./SystemEditor').then((m) => ({ default: m.SystemEditor })));
 
 export function NewWorldDialog(p: NewWorldDialogProps) {
   const [step, setStep] = useState<1 | 2>(p.init?.step ?? 1);
@@ -170,6 +189,11 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
   const [seedText, setSeedText] = useState(String(params.seed));
   const [seedBad, setSeedBad] = useState(false);
   const [picture, setPicture] = useState<LoadedImage | null>(null);
+  /** 星系结构的逐行星/卫星覆盖表(S2:新建时可细化;空 = 和种子一样) */
+  const [sysOv, setSysOv] = useState<SystemOverrides>({ planets: [], moons: [] });
+  const [sysOpen, setSysOpen] = useState(false);
+  /** 新建时先选:生成星球系(星系流程) / 不生成(原版流程) */
+  const [astroOn, setAstroOn] = useState(false);
   /** 推演到第几年(开关关着 = undefined,就是 3000 年) */
   const [years, setYears] = useState<number | undefined>(first.endYear);
   /** 「大陆」一组展开了没有(平时收着,像打印窗口的「显示详细信息」) */
@@ -187,6 +211,7 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
     setSeedText(String(seed));
     setSeedBad(false);
     setYears(c.endYear);
+    setSysOv({ planets: [], moons: [] });
     setRules(c.rules && rulesUiOn() ? { r: c.rules, preset: true } : p.rules ? { r: p.rules, preset: false } : null);
   };
   /** 拓荒(都是默认 = undefined);「地形难走程度」展开没有 */
@@ -254,12 +279,20 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
     const n = Math.floor(Number(seedText));
     // 照手绘图:海岸照图,大陆一组里只露出板块硬度;预设带来的其余几样不显示,也不用
     const final = mode === 'random' ? (n > 0 ? { ...params, seed: n } : params) : { ...params, ...CONT_RESET, hardness: params.hardness };
+    // 星系结构的覆盖表跟着这一次生成走(生成/推演请求都从 systemState 读)
+    setCurrentSystem(sysOv);
     given.current = true;
     if (mode !== 'image' && held.current) URL.revokeObjectURL(held.current.url);
     p.onStart({ mode, params: final, picture: mode === 'image' ? picture : null, ...(years ? { endYear: years } : {}), ...(frontier && mode === 'image' ? { frontier } : {}), ...(rules ? { rules: rules.r } : {}) });
   };
   const next = (m: NewWorldMode = mode) => {
     setMode(m);
+    // 星系流程:直接进「星系与天体」全屏树形页,不再走原来的第 2 步参数页
+    if (astroOn && m === 'random') {
+      setParams((q) => ({ ...q, astro: 1 }));
+      setSysOpen(true);
+      return;
+    }
     setStep(2);
   };
 
@@ -274,7 +307,8 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+  
+  return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   // 把图拖进窗口:第 2 步照手绘图时收下(别处松手不当成打开存档)
@@ -377,7 +411,7 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
       <div className="nd-picked-tx">
         <b title={picture.name}>{picture.name}</b>
         <span>
-          {picture.w} × {picture.h}，{picture.pic.colorful ? '彩色' : '灰度'}
+          {picture.w} Ã— {picture.h}，{picture.pic.colorful ? '彩色' : '灰度'}
         </span>
         <button className="nd-link" data-act="dlg-repick" onClick={pick}>
           换一张
@@ -395,8 +429,8 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
     </div>
   );
 
-  const setKey = (k: keyof WorldParams) => (v: number) => setParams((q) => ({ ...q, [k]: v }));
-  const row = (k: keyof WorldParams) => <ParamRow key={k} s={sliderOf(k)} value={params[k]} phone={p.phone} changed={changed.has(k)} onChange={setKey(k)} />;
+  const setKey = (k: BaseParamKey) => (v: number) => setParams((q) => ({ ...q, [k]: v }));
+  const row = (k: BaseParamKey) => <ParamRow key={k} s={sliderOf(k)} value={params[k]} phone={p.phone} changed={changed.has(k)} onChange={setKey(k)} />;
   // 大陆这几样和选中的预设(或默认)一样就不显示「恢复默认」;点它回到选中的那一套
   const contKeys = Object.keys(CONT_RESET) as (keyof typeof CONT_RESET)[];
   const contPlain = !contKeys.some((k) => changed.has(k));
@@ -487,13 +521,13 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
         )}
         {p.phone ? (
           <>
-            <b>民族扩散</b>：人往荒地走得多快，2× 大约第 1500 年住满。
+            <b>民族扩散</b>：人往荒地走得多快，2Ã— 大约第 1500 年住满。
             <br />
             <b>国家扩张</b>：国家并下周围部落地有多快。
           </>
         ) : (
           <>
-            <b>民族扩散</b>：人往荒地走得多快。1× 是现在的样子，大约第 3000 年住满；2× 大约第 1500 年就住满了。
+            <b>民族扩散</b>：人往荒地走得多快。1Ã— 是现在的样子，大约第 3000 年住满；2Ã— 大约第 1500 年就住满了。
             <br />
             <b>国家扩张</b>：国家把周围没有国家的地并进来有多快。调快了，没有国家的部落地留得少。
           </>
@@ -517,6 +551,23 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
           {i === 0 && contSec}
         </Fragment>
       ))}
+      {step === 2 && (
+        <div className="nd-sec">
+          <div className="nd-lab">
+            星系与天体
+            <small>恒星 / 行星 / 卫星 一棵树</small>
+          </div>
+          <div className="nd-grp" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button className="ov-btn" data-act="open-system-editor" onClick={() => setSysOpen(true)}>
+              打开「星系与天体」…
+            </button>
+            <span style={{ fontSize: 12, opacity: 0.6 }}>
+              {sysOv.planets.length + sysOv.moons.length ? `改了 ${sysOv.planets.length + sysOv.moons.length} 项` : '按种子（没改）'}
+            </span>
+          </div>
+          <p className="nd-foot">恒星类型、构型、行星/卫星数量、小行星带、每颗行星的轨道与物理、各天体的地表参数与地形，都在这个树里改；改动只进存档文件。</p>
+        </div>
+      )}
       {/* 随机生成先只做地图:拓荒、历史在新建界面的第 2 步「打造文明」里定 */}
       {mode === 'image' && (
         <>
@@ -618,6 +669,26 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
     />
   );
 
+
+  const sysDlg = sysOpen
+    ? createPortal(
+        <Suspense fallback={null}>
+          <LazySystemEditor
+            params={params}
+            overrides={sysOv}
+            onChange={setSysOv}
+            onParams={(patch) => setParams((x) => ({ ...x, ...patch }))}
+            onClose={() => {
+              setSysOpen(false);
+              // 星系流程:树形页「完成」= 直接开始生成(不再回第 2 步)
+              if (astroOn) start();
+            }}
+          />
+        </Suspense>,
+        document.body,
+      )
+    : null;
+
   return (
     <div className="nd-scrim" onPointerDown={stop} onClick={p.onCancel} onDragOver={onDragOver} onDragLeave={() => setOver(false)} onDrop={onDrop} onWheel={stop}>
       {p.phone ? (
@@ -647,7 +718,23 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
           {step === 2 && rulesNote && <div className="nd-rl-row">{rulesNote}</div>}
           <div className="nd-pbody">
             {step === 1 && <p className="nd-sub">{sub}</p>}
-            {step === 1 ? cards : paramsBody}
+            {step === 1 ? (
+              <>
+                {cards}
+                <div className="nd-syspick" data-act="sys-pick" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 14, fontSize: 13, flexWrap: 'wrap' }}>
+                  <span style={{ opacity: 0.7 }}>生成星球系</span>
+                  <button className="ov-btn" data-act="sys-on" onClick={() => { setAstroOn(true); setParams((q) => ({ ...q, astro: 1 })); }} style={astroOn ? { borderColor: '#5fa85f', color: '#5fa85f' } : undefined}>
+                    开（星系与天体）
+                  </button>
+                  <button className="ov-btn" data-act="sys-off" onClick={() => { setAstroOn(false); setParams((q) => ({ ...q, astro: 0 })); }} style={!astroOn ? { borderColor: '#5fa85f', color: '#5fa85f' } : undefined}>
+                    关（原版流程）
+                  </button>
+                  <span style={{ opacity: 0.55, fontSize: 12 }}>开 → 下一步直接进「星系与天体」；关 → 原版参数流程</span>
+                </div>
+              </>
+            ) : (
+              paramsBody
+            )}
           </div>
           <div className="nd-pfoot">
             {waitSay}
@@ -655,6 +742,7 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
           </div>
           {file}
           {keepDlg}
+          {sysDlg}
         </div>
       ) : (
         <div
@@ -673,7 +761,19 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
           </div>
           {sharedBar || <p className="nd-sub">{sub}</p>}
           {step === 1 ? (
-            cards
+            <>
+              {cards}
+              <div className="nd-syspick" data-act="sys-pick" style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 14, fontSize: 13, flexWrap: 'wrap' }}>
+                <span style={{ opacity: 0.7 }}>生成星球系</span>
+                <button className="ov-btn" data-act="sys-on" onClick={() => { setAstroOn(true); setParams((q) => ({ ...q, astro: 1 })); }} style={astroOn ? { borderColor: '#5fa85f', color: '#5fa85f' } : undefined}>
+                  开（星系与天体）
+                </button>
+                <button className="ov-btn" data-act="sys-off" onClick={() => { setAstroOn(false); setParams((q) => ({ ...q, astro: 0 })); }} style={!astroOn ? { borderColor: '#5fa85f', color: '#5fa85f' } : undefined}>
+                  关（原版流程）
+                </button>
+                <span style={{ opacity: 0.55, fontSize: 12 }}>开 → 下一步直接进「星系与天体」；关 → 原版参数流程</span>
+              </div>
+            </>
           ) : (
             <>
               {presetRow}
@@ -695,6 +795,7 @@ export function NewWorldDialog(p: NewWorldDialogProps) {
           </div>
           {file}
           {keepDlg}
+          {sysDlg}
         </div>
       )}
     </div>

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 照手绘图新建那一页的零件(Studio.tsx 摆):
  *
  *   ImageCard   左边最上面那张图:缩略图、文件名、多大、彩色还是灰度,右边「换一张」(重新认,第 2 步画的笔留着)
@@ -12,6 +12,7 @@
  */
 import { useEffect, useState, type ReactNode } from 'react';
 import type { WorldParams } from '../../gen/world';
+import type { BaseParamKey } from '../../gen/params';
 import { getEdits, setEndYear, setFrontier, useEdits } from '../editsStore';
 import { terrainChangedCount, terrainValue } from '../../gen/civ/frontier';
 import { EXPAND_SLIDER, SPREAD_SLIDER, TERRAIN_SLIDERS, withSpeed, withTerrain, withoutTerrain } from '../frontierUi';
@@ -90,7 +91,7 @@ export function StepGroup({
 }
 
 /** 第 3 步列哪几样参数(陆地比例不列:海陆照图定) */
-const STEP_KEYS: (keyof WorldParams)[] = ['plates', 'mountains', 'hardness', 'temperature', 'rainfall', 'cells'];
+const STEP_KEYS: BaseParamKey[] = ['plates', 'mountains', 'hardness', 'temperature', 'rainfall', 'cells'];
 
 function StepSlider({ s, value, onCommit, disabled, changed }: { s: SliderLike; value: number; onCommit: (v: number) => void; disabled: boolean; changed?: boolean }) {
   const k = s.key;

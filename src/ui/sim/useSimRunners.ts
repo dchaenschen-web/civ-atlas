@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 界面上要交给后台线程算的几种操作,接到线程上(App 用;线程客户端见 ./simClient.ts,算完交回的结果怎么换上界面见 ./useSimResults.ts):
  *   - useSimRunners:助手的试推演、逐年推演(算一步、从某一年开始、存回推演模式、重新演绎、切支线)、地形大事的"会怎么样"
  *   - useExtendOutlineRunners:「再推」「照大纲推演」
@@ -7,6 +7,7 @@
  * 登记只在 send 换了时重做(send 跟着线程客户端,一直不换):处理函数里读的是 ref、store 和第一次渲染时传进来的函数,和原来写在 App 里一样。
  * 界面的状态还在 App 里,要读、要改的 ref 由 App 按块传进来(ref 分块见 ../world/worldRefs.ts)
  */
+import { systemOpt } from '../../gen/systemState';
 import { useEffect } from 'react';
 import type { WorkerRequest } from '../../worker';
 import type { Civ } from '../../gen/civ/types';
@@ -297,6 +298,7 @@ export function useExtendOutlineRunners(deps: ExtendOutlineRunnersDeps): void {
         setExtendBusy({ xid, from, to, year: null, pct: 0, slow: !!civUps.current?.length });
         send({
           type: 'extend',
+          ...systemOpt(),
           id: reqId.current,
           xid,
           to,
@@ -352,6 +354,7 @@ export function useExtendOutlineRunners(deps: ExtendOutlineRunnersDeps): void {
         outlineProgress(oid, 0, plots.length, [], undefined);
         send({
           type: 'outline',
+          ...systemOpt(),
           id: reqId.current,
           oid,
           plots,

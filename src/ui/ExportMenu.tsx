@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界概览头部的"导出"菜单(阶段 4):把世界带出这个网页。
  *
  *   地图图片(PNG / JPEG):整张地图(不是当前视口),当前画风、当前时间轴年份的文明层(和屏幕上开着的一样),
@@ -27,6 +27,7 @@ import { rasterize, type Raster } from '../gen/raster';
 import { olderTerrain } from '../gen/readers/older';
 import type { Civ } from '../gen/civ/types';
 import { chronicleDocument } from '../gen/civ/story/chronicle';
+import { omenDocument } from '../gen/civ/story/omen';
 import { fullChronicle } from '../gen/civ/story/religionText';
 import { chronicleInSlices } from './chronicleHandoff';
 import { AZGAAR_SEA_GRAY, heightmapNote, type HeightmapBits } from '../gen/heightmap';
@@ -489,7 +490,12 @@ export function ExportMenu({ data, civ: shown, plain, style, layer, look = 'clas
         // 换回原名的那份历史还没算过编年史:在主线程上分小块算好(长历史一口气算要好几百毫秒,界面那么久不动)
         await chronicleInSlices(civ);
         const name = `${base}-编年史.${job === 'md' ? 'md' : 'txt'}`;
-        const text = chronicleDocument(civ, { format: job, seed: seedN, params, entries: fullChronicle(civ), era, months: monthsOf(getEdits().months), monthNames: monthNamesInUse(getEdits().monthNames) });
+        let text = chronicleDocument(civ, { format: job, seed: seedN, params, entries: fullChronicle(civ), era, months: monthsOf(getEdits().months), monthNames: monthNamesInUse(getEdits().monthNames) });
+        // 天象纪:开了星球系的世界,把日食、彗星、会合、客星、磁暴接在编年史后面(古典 / 历法既明两节)
+        if (data?.world) {
+          const om = omenDocument(civ, data.world);
+          if (om && !om.startsWith('这个世界没有天象记录')) text += '\n' + om;
+        }
         const blob = new Blob([text], { type: job === 'md' ? 'text/markdown;charset=utf-8' : 'text/plain;charset=utf-8' });
         download(blob, name);
         dbg = { job, name, bytes: blob.size, ms: performance.now() - t0 };

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 逐项核对世界文件读出来的内容。文件是别人给的,每一个数字、每一个字都可能是乱填的:读包函数(snapshot.ts)只保证能安全读完,
  * 读出来的东西对不对在这里查。地块数、编号、年份这些错了,后面画图、查询的代码会读越界、卡死或者白屏。
  *
@@ -1342,4 +1342,52 @@ export function validateThumb(b: Uint8Array): void {
     p += 2 + len;
   }
   broken('封面没有尺寸');
+}
+/** 星系块:覆盖表/小行星带/撞击结算。都不深查(是本机自己的数据),只卡类型与上限 */
+export function validateSystem(v: unknown): void {
+  if (v === null || v === undefined) broken('星系块是空的');
+  const s = obj(v, '星系');
+  const ov = obj(s.overrides, '星系的覆盖表');
+  const planets = list(ov.planets, '星系覆盖表.planets');
+  const moons = list(ov.moons, '星系覆盖表.moons');
+  if (planets.length > 64 || moons.length > 256) broken('星系覆盖表太长');
+  const orbit = (o: Obj, at: string) => {
+    for (const k of ['a', 'ecc', 'incDeg', 'nodeDeg'] as const) {
+      if (o[k] !== undefined) num(o[k], `${at}.${k}`);
+    }
+    for (const k of ['radius', 'tilt', 'rotation', 'life', 'reroll', 'distance'] as const) {
+      if (o[k] !== undefined) num(o[k], `${at}.${k}`);
+    }
+    if (o.terrain !== undefined) list(o.terrain, `${at}.terrain`);
+    if (o.locked !== undefined && typeof o.locked !== 'boolean') broken(`${at}.locked 不是布尔值`);
+    if (o.home !== undefined && typeof o.home !== 'boolean') broken(`${at}.home 不是布尔值`);
+  };
+  planets.forEach((raw, i) => {
+    const o = obj(raw, `星系覆盖表 [${i}]`);
+    int(o.index, 0, 64, `星系覆盖表 [${i}].index`);
+    orbit(o, `星系覆盖表 [${i}]`);
+  });
+  moons.forEach((raw, i) => {
+    const o = obj(raw, `星系覆盖表 [${i}]`);
+    int(o.planet, 0, 64, `卫星覆盖 [${i}].planet`);
+    int(o.moon, 0, 64, `卫星覆盖 [${i}].moon`);
+    orbit(o, `卫星覆盖 [${i}]`);
+  });
+  if (s.belts !== undefined && s.belts !== null) {
+    const belts = list(s.belts, '小行星带');
+    if (belts.length > 4) broken('小行星带太多');
+    belts.forEach((raw, i) => {
+      const b = obj(raw, `小行星带 [${i}]`);
+      const lo = num(b.innerAU, `小行星带 [${i}].innerAU`);
+      const hi = num(b.outerAU, `小行星带 [${i}].outerAU`);
+      if (!(hi > lo) || lo <= 0) broken(`小行星带 [${i}] 的范围不对`);
+      num(b.count, `小行星带 [${i}].count`);
+      num(b.incDeg, `小行星带 [${i}].incDeg`);
+      num(b.seed, `小行星带 [${i}].seed`);
+    });
+  }
+  if (s.impactSettlement !== undefined && s.impactSettlement !== null) {
+    const st = obj(s.impactSettlement, '撞击结算');
+    list(st.records, '撞击结算.records');
+  }
 }

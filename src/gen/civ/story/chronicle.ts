@@ -3578,10 +3578,10 @@ function practiceMarks(civ: Civ): { first: Set<number>; last: Set<number> } {
 const firstDone = (civ: Civ, id: number) => practiceMarks(civ).first.has(id);
 const lastOfKind = (civ: Civ, id: number) => practiceMarks(civ).last.has(id);
 
-/** 一州闹饥荒(地震水旱:cause = quake)时城里的人口折损(Settlement.sacks 里同一种、同一年的那一条;找不到 = 0) */
+/** 一州闹饥荒(地震水旱:cause = quake;火山:cause = volcano)时城里的人口折损(Settlement.sacks 里同一种、同一年的那一条;找不到 = 0) */
 function famineLoss(civ: Civ, e: Annal): number {
   const s = e.settlement >= 0 ? civ.settlements[e.settlement] : undefined;
-  const cause = e.cause === 'quake' ? 'quake' : 'famine';
+  const cause = e.cause === 'quake' ? 'quake' : e.cause === 'volcano' ? 'volcano' : e.cause === 'impact' ? 'impact' : 'famine';
   return s?.sacks?.find((k) => k.cause === cause && k.year === e.year)?.loss ?? 0;
 }
 
@@ -3598,6 +3598,20 @@ function famineToll(loss: number): string {
  */
 function famineText(civ: Civ, e: Annal): string {
   const r = regionName(civ, e.region) || cityName(civ, e.settlement);
+  if (e.cause === 'volcano') {
+    const s = e.settlement >= 0 ? civ.settlements[e.settlement] : undefined;
+    const from = s?.sacks?.find((k) => k.cause === 'volcano' && k.year === e.year)?.from ?? e.region;
+    const at = from >= 0 ? regionName(civ, from) : '';
+    const k = Math.round(famineLoss(civ, e) * 10);
+    return `${e.a >= 0 ? pn(civ, e.a, e.year) : ''}${at || r || '境内'}火山崩发,城郭尽焚${e.b > 1 ? `,${cnNumber(e.b)}州受灾` : ''}${k >= 1 ? `,死者十之${cnNumber(k)}` : ''}`;
+  }
+  if (e.cause === 'impact') {
+    const s = e.settlement >= 0 ? civ.settlements[e.settlement] : undefined;
+    const from = s?.sacks?.find((k) => k.cause === 'impact' && k.year === e.year)?.from ?? e.region;
+    const at = from >= 0 ? regionName(civ, from) : '';
+    const k = Math.round(famineLoss(civ, e) * 10);
+    return `${e.a >= 0 ? pn(civ, e.a, e.year) : ''}${at || r || '境内'}陨星坠落,城郭尽焚${e.b > 1 ? `,${cnNumber(e.b)}州受灾` : ''}${k >= 1 ? `,死者十之${cnNumber(k)}` : ''}`;
+  }
   if (e.cause === 'quake') {
     const s = e.settlement >= 0 ? civ.settlements[e.settlement] : undefined;
     const from = s?.sacks?.find((k) => k.cause === 'quake' && k.year === e.year)?.from ?? e.region;

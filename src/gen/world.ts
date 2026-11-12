@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界生成总流程。纯函数:同样的参数 → 同样的世界。
  *
  *   网格 → 板块 → 地壳抬升 → 河流侵蚀(中途按新地形重算一次降雨)
@@ -23,6 +23,8 @@ import { mulberry32, subSeed, clamp, keyed, smoothstep } from './util';
 import { geometryOf, sphereSpacing } from './geometry';
 import type { TerrainOp } from './edits';
 import { computeCurrents, type Currents } from './currents';
+import { generateAstro, climateModsOf, type AstroSystem } from './astro';
+import type { SystemOverrides } from './astroDesign';
 import {
   DEL_WATER_FLUX,
   TERRAIN_MAX_OPS,
@@ -40,6 +42,8 @@ import {
   riversAt,
   volcanoPeaks,
 } from './terrainEdits';
+import { applyIceSheets, carveRifts, smoothRelief, stampCraters } from './surfaceShapes';
+import type { SurfaceSkin } from './surfaceKinds';
 import { sketchUsed, type Sketch } from './sketch';
 import { samePlates } from './plateEdits';
 import { DEFAULT_PARAMS, type WorldParams } from './params';
@@ -90,6 +94,14 @@ export interface World {
    */
   readers?: ReaderVersions;
   params: WorldParams;
+  /**
+   * 这颗星球所在的星球系(恒星、各行星、卫星、大气、星图):只在 params.astro = 1 时有。
+   * **派生数据**:世界文件不存它(存的时候去掉),读回来按 params 重算(gen/astro.ts 的 astroOf)。
+   * 纯计算、确定性,和地形 / 历史的随机流互不影响
+   */
+  astro?: AstroSystem;
+  /** 逐行星/卫星覆盖表(星系结构编辑的结果):派生来源;世界文件不存它(存进 system 块),读回来挂上 */
+  system?: SystemOverrides;
   width: number;
   height: number;
   climate: ClimateParams;
@@ -205,7 +217,7 @@ function* planetOf(p: WorldParams, mesh: Mesh, climateP: ClimateParams): Generat
   if (planet) {
     planetMemo.delete(key);
   } else {
-    const b = yield* growTerrain(p, null, [], climateP, () => {}, key, mesh);
+    const b = yield* growTerrain(p, null, [], climateP, () => {}, key, undefined, mesh);
     planet = { refs: b.refs, peak: b.peak };
     if (planetMemo.size >= PLANET_MEMO) planetMemo.delete(planetMemo.keys().next().value!);
   }
@@ -228,7 +240,7 @@ function meshOf(W: number, H: number, spacing: number, seed: number): Mesh {
 }
 
 /** 前一半(见 TerrainBase):ops 只给侵蚀之前套的那几种。一段一段算,段与段之间停一下(见 generateWorldSteps) */
-function* growTerrain(p: WorldParams, sk: Sketch | null, ops: readonly TerrainOp[], climateP: ClimateParams, progress: Progress, key: string, meshIn?: Mesh): Generator<void, TerrainBase> {
+function* growTerrain(p: WorldParams, sk: Sketch | null, ops: readonly TerrainOp[], climateP: ClimateParams, progress: Progress, key: string, skin?: SurfaceSkin, meshIn?: Mesh) {
   const W = MAP_W;
   const H = MAP_H;
 
@@ -402,6 +414,35 @@ function* growTerrain(p: WorldParams, sk: Sketch | null, ops: readonly TerrainOp
   }
   const elevation = toMeters(h, peak, base);
   history.push(elevation.slice());
+
+  // 步6b:按行星类型塑形 —— 陨击坑场 / 裂谷 / 极区冰盖(改过地形或草图的世界不塑形,免得破坏作者的改动)
+  if (!edited && skin && skin !== 'earth') {
+    if (skin === 'airless' || skin === 'dwarf') {
+      // 先把大起伏抹平(没有大气/水的世界,山不该这么新),再按大/中/小三档砸坑
+      smoothRelief(mesh, elevation, skin === 'airless' ? 0.72 : 0.55, spacing * 2.6);
+      const big = skin === 'airless' ? 45 : 28;
+      const mid = skin === 'airless' ? 200 : 120;
+      const small = skin === 'airless' ? 560 : 320;
+      const seedC = subSeed(p.seed, 'crater-field');
+      // 大坑:直径几十个地块,坑缘宽、坑底深
+      stampCraters(mesh, elevation, seedC, { count: big, minR: spacing * 3, maxR: spacing * 8, depthK: 0.6 });
+      // 中坑
+      stampCraters(mesh, elevation, subSeed(seedC, 'mid'), { count: mid, minR: spacing * 1.2, maxR: spacing * 3.4, depthK: 0.52 });
+      // 小坑:让地面有麻点
+      stampCraters(mesh, elevation, subSeed(seedC, 'small'), { count: small, minR: spacing * 0.5, maxR: spacing * 1.4, depthK: 0.42 });
+      yield;
+      progress('陨击坑场', 0.6);
+      history.push(elevation.slice());
+    } else if (skin === 'lava') {
+      carveRifts(mesh, elevation, subSeed(p.seed, 'rift-field'), { count: 8, minLen: 0.2, maxLen: 0.55, minWidth: spacing * 0.9, maxWidth: spacing * 2.6, depth: 1900 });
+      progress('裂谷', 0.6);
+      history.push(elevation.slice());
+    } else if (skin === 'frozen') {
+      applyIceSheets(mesh, elevation, subSeed(p.seed, 'ice-sheets'), { fromLat: 52, fullLat: 78, height: 2200, flatten: 0.82 });
+      progress('冰盖', 0.6);
+      history.push(elevation.slice());
+    }
+  }
   yield;
 
   // ---- 湖泊:裂谷下陷 + 少量冰川 / 构造洼地 ----
@@ -446,8 +487,8 @@ function* growTerrain(p: WorldParams, sk: Sketch | null, ops: readonly TerrainOp
  * terrain:作者的地形修改(WorldEdits.terrain,按先后;不给 / 空 = 不改);sketch:草图涂成的格子图(不给 / null = 没画)。
  * cache:记着上一次的前一半(见 TerrainBase);参数、草图、侵蚀之前的地形修改都没变时跳过网格、板块、侵蚀
  */
-export function generateWorld(params: WorldParams, progress: Progress = () => {}, terrain?: readonly TerrainOp[], sketch?: Sketch | null, cache?: BaseCache): World {
-  const it = generateWorldSteps(params, progress, terrain, sketch, cache);
+export function generateWorld(params: WorldParams, progress: Progress = () => {}, terrain?: readonly TerrainOp[], sketch?: Sketch | null, cache?: BaseCache, system?: SystemOverrides | null, skin?: SurfaceSkin): World {
+  const it = generateWorldSteps(params, progress, terrain, sketch, cache, system, skin);
   for (;;) {
     const r = it.next();
     if (r.done) return r.value;
@@ -459,12 +500,16 @@ export function generateWorld(params: WorldParams, progress: Progress = () => {}
  * 或者不接着算了(后台线程编辑地形时新的一笔来了,上一笔不用算完)。接着算到底和 generateWorld 一模一样;
  * 中途不算了,记着的东西(cache 里的前一半等)要么还是原来的、要么是算完了的一份,不会是算了一半的
  */
-export function* generateWorldSteps(params: WorldParams, progress: Progress = () => {}, terrain?: readonly TerrainOp[], sketch?: Sketch | null, cache?: BaseCache): Generator<void, World> {
+export function* generateWorldSteps(params: WorldParams, progress: Progress = () => {}, terrain?: readonly TerrainOp[], sketch?: Sketch | null, cache?: BaseCache, system?: SystemOverrides | null, skin?: SurfaceSkin): Generator<void, World> {
   const p = { ...DEFAULT_PARAMS, ...params };
   // 地形修改 + 地形大事(upheaval.ts 生成大事以后的世界时接在后面)
   const ops = cleanTerrainOps(terrain ?? [], TERRAIN_MAX_OPS + UPHEAVALS_MAX * UPHEAVAL_OPS_MAX);
   const W = MAP_W;
   const H = MAP_H;
+  // 星球系:只在 astro = 1 时生成;气候拿它的辐照/倾角/自转/大气修正(astro = 0 时是 null,气候一条不改)。
+  // mods 只当参数传给 computeClimate,不放进 ClimateParams/World.climate——那两样要进世界文件、要过校验
+  const astro = p.astro === 1 ? generateAstro(p, system) : null;
+  const climateMods = climateModsOf(astro);
   const climateP: ClimateParams = {
     seed: p.seed,
     temperature: p.temperature,
@@ -479,7 +524,7 @@ export function* generateWorldSteps(params: WorldParams, progress: Progress = ()
     base = had;
     progress('湖泊与水系', 0.62);
   } else {
-    base = yield* growTerrain(p, sk, shapes, climateP, progress, key);
+base = yield* growTerrain(p, sk, shapes, climateP, progress, key, skin);
     if (cache) cache.base = base;
   }
   // 没改地形的星球:记下它的"最高峰"(planetOf 要的就是这一份),之后编辑地形涂第一笔不用再生成一遍这颗星球
@@ -624,7 +669,7 @@ export function* generateWorldSteps(params: WorldParams, progress: Progress = ()
   yield;
   progress('风与降水', 0.72);
   const currents = computeCurrents(mesh, water);
-  const clim = computeClimate(mesh, elevation, water, climateP, currents, true);
+  const clim = computeClimate(mesh, elevation, water, climateP, currents, true, climateMods);
   // 改地形:作者涂的更湿 / 更干 / 更暖 / 更冷
   if (ops.length) applyClimatePens(mesh, clim.temperature, clim.precipitation, ops);
   const seaIce = computeSeaIce(mesh, elevation, water, clim.temperature, clim.windX, clim.windY, p.seed);
@@ -701,6 +746,9 @@ export function* generateWorldSteps(params: WorldParams, progress: Progress = ()
     history,
     maxElevation,
     volcanoes: ops.length ? volcanoPeaks(mesh, water, elevation, ops) : [],
+    // 星球系:只在 params.astro = 1 时挂上(默认不生成,世界和以前逐字节一样);派生数据,不进世界文件
+    ...(astro ? { astro } : {}),
+    ...(system ? { system } : {}),
     ...(ops.length ? { terrain: ops.slice() } : {}),
     ...(sk ? { sketch: sk } : {}),
   };

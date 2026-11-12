@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界概览的"编年史"页:按年份列出推演里的大事(条目由 gen/civ/chronicle.ts 写好),新的在上。
  * 一行:年份(宋体,后面灰字写几月;手机写在年份下面一行)· 类型(彩色粗体:战争 / 改朝 / 立国 / 称帝 / 同化 / 宗教 / 干预……)· 纪事正文。
  * 月份按世界设定「月份」(一年几个月 / 只写年;gen/era.ts 的 monthOf;月份起了名字的写名字),按整年算的事(宗教、干预、地形大事)不写月。
@@ -19,6 +19,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import type { Civ } from '../gen/civ/types';
 import { chronicleText, filterChronicle, polityChronicle, type ChronicleEntry } from '../gen/civ/story/chronicle';
+import type { World } from '../gen/world';
+import { OMEN_NAMES, omensOf } from '../gen/civ/story/omen';
 import { monthLabel, monthOf, yearFull, yearShort } from '../gen/era';
 import { seedTag, useEra, useMonthNames, useMonths } from './editsStore';
 import { JumpField } from './JumpYear';
@@ -46,13 +48,16 @@ const NOW_GAP = 20;
 /** 行的状态(data-st):已发生 / 进行中(战争打到一半)/ 还没发生 */
 const ST = ['past', 'live', 'future'] as const;
 
-export function Chronicle({ civ }: { civ: Civ | null }) {
+export function Chronicle({ civ, world: astroWorld = null }: { civ: Civ | null; world?: World | null }) {
   const view = useChronicle();
   const aiOn = useAiOn();
   const era = useEra();
   const months = useMonths();
   const monthNames = useMonthNames();
   const all = useMemo(() => (civ ? fullChronicle(civ) : []), [civ]);
+  // 天象纪:开了星球系的世界才有(日食、彗星、会合、客星、磁暴,和前后几年的大事挂好钩)
+  const omens = useMemo(() => (civ && astroWorld ? omensOf(civ, astroWorld) : []), [civ, astroWorld]);
+  const [omenOpen, setOmenOpen] = useState(false);
   // 按国家筛过的"全部"和"大事"(两个按钮上各写条数),当前列出的是其中之一;只看一国时"全部"里并进这一国的君主继位
   const mine = useMemo(() => {
     if (!civ || view.polity === null) return filterChronicle(all, { polity: view.polity });
@@ -266,6 +271,26 @@ export function Chronicle({ civ }: { civ: Civ | null }) {
           </div>
         )}
       </div>
+      {/* 天象纪:古典时代不知其故,编年史写成灾异 / 祥瑞;火药以后历官预推,只记一笔 */}
+      {omens.length > 0 && (
+        <div style={{ borderTop: '1px solid rgba(128,128,128,0.2)', padding: '8px 10px' }}>
+          <button className="ov-btn" data-act="omen-toggle" onClick={() => setOmenOpen((v) => !v)} title="天象与历史的关联(古典时代视为灾异 / 祥瑞)">
+            天象纪 <span className="chron-n">{omens.length}</span> {omenOpen ? '▾' : '▸'}
+          </button>
+          {omenOpen && (
+            <div style={{ maxHeight: 260, overflowY: 'auto', marginTop: 6 }}>
+              {omens.map((o, i) => (
+                <div key={i} style={{ display: 'flex', gap: 8, padding: '2px 0', fontSize: 12, opacity: o.tie ? 1 : 0.8 }}>
+                  <span style={{ width: 64, opacity: 0.65 }}>第 {o.year} 年</span>
+                  <span style={{ width: 88 }}>{OMEN_NAMES[o.kind]}</span>
+                  {o.classical && <span style={{ color: '#c9a15a' }}>古典</span>}
+                  <span style={{ flex: 1 }}>{o.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </section>
   );
 }

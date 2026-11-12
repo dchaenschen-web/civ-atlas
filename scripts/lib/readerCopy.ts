@@ -80,7 +80,8 @@ export function frozenText(read: ReadFile, file: string, files: ReadonlySet<stri
     if (!r.typeOnly) continue;
     const t = resolve(read, file, r.spec);
     if (!t || files.has(t)) continue;
-    const rel = relative(dirname(to), t.replace(/\.tsx?$/, ''));
+    // 导入说明符一律用正斜杠(Windows 上 path.relative 会给反斜杠,写进 import 是错的)
+    const rel = relative(dirname(to), t.replace(/\.tsx?$/, '')).replace(/\\/g, '/');
     out = `${out.slice(0, r.start)}'${rel.startsWith('.') ? rel : `./${rel}`}'${out.slice(r.end)}`;
   }
   return /\.tsx?$/.test(file) ? `// @ts-nocheck\n// ${note}\n${out}` : out;

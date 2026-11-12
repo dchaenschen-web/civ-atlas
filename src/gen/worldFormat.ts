@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界文件的格式定义(第 1 版):后缀、清单的字段、有哪几块、读不了时的几种错。这一层只有定义,打包和读在 worldFile.ts,逐项核对在 worldValidate.ts。
  *
  * 文件是一个不压缩的 ZIP(zipStore.ts),任何解压软件都打得开:
@@ -128,6 +128,7 @@ export interface WorldManifest {
 
 /** 这一版软件认得的块:路径照这个写;required = 一个世界必须有 */
 export const KNOWN_PARTS: ReadonlyMap<string, { file: string; required: boolean; need: PartNeed }> = new Map([
+  ['system', { file: 'parts/system.gz', required: false, need: 'view' }],
   ['map', { file: 'parts/map.gz', required: true, need: 'view' }],
   ['eras', { file: 'parts/eras.gz', required: false, need: 'view' }],
   ['civ', { file: 'parts/civ.gz', required: true, need: 'view' }],
@@ -136,6 +137,16 @@ export const KNOWN_PARTS: ReadonlyMap<string, { file: string; required: boolean;
   ['author', { file: 'parts/author.gz', required: false, need: 'extra' }],
   ['thumb', { file: 'parts/thumb.jpg', required: false, need: 'extra' }],
 ]);
+
+import type { BeltDesign, SystemOverrides } from './system';
+
+/** 星系那一块:逐行星/卫星覆盖表、小行星带、撞击结算(都没有 = 单行星、和以前一样) */
+export interface SystemContent {
+  overrides: SystemOverrides;
+  belts?: BeltDesign[] | null;
+  /** 推演结束以后结算出来的撞击记录(还没应用 = null) */
+  impactSettlement?: { records: unknown[] } | null;
+}
 
 /** 作者内容里的一条 AI 正文(和浏览器里存的 AiNote 同样的字段) */
 export interface AuthorNote {

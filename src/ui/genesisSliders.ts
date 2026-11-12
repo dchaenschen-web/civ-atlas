@@ -3,13 +3,13 @@
  * 新建世界的弹窗(NewWorldDialog.tsx)、新建界面(studio/)、世界设定页(WorldOverviewGenesis.tsx,那边照旧一起导出)都用;
  * 单独一个文件,打开网站时首页上的新建弹窗不用带上世界设定页。
  */
-import type { WorldParams } from '../gen/params';
+import type { BaseParamKey, WorldParams } from '../gen/params';
 import { END_YEAR_DEFAULT, END_YEAR_MAX, END_YEAR_STEP } from '../gen/edits';
 import { genSeconds } from './genSpeed';
 import type { FieldSpec } from './ParamField';
 
 export interface Slider {
-  key: keyof WorldParams;
+  key: BaseParamKey;
   name: string;
   min: number;
   max: number;
@@ -22,6 +22,8 @@ export interface Slider {
   field?: FieldSpec;
   /** 拖到的位置吸到哪(只取几档的滑条;不给 = 不吸) */
   snap?: (v: number) => number;
+  /** 有具体名字的几档(恒星类型、构型、生命、撞击频率…):界面渲染成分段选项,不用滑条 */
+  options?: readonly { v: number; label: string }[];
   /** 滑条的值和框里写的数不成比例时(按对数摆的几档):值 → 框里的数、框里的数 → 值(不夹进范围);给了就不看 field 的 mul、div */
   shown?: (v: number) => number;
   fromShown?: (d: number) => number;
@@ -58,7 +60,11 @@ export const CONT_SLIDERS: Slider[] = [
   { key: 'rugged', name: '破碎度', min: 0.2, max: 2, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: '小 = 一大块、海岸平直、岛少(像非洲);大 = 支离破碎、半岛海湾和岛多(像欧洲)', field: { unit: '×', digits: 2 } },
   { key: 'hardness', name: '板块硬度', min: 0.4, max: 2.5, step: 0.05, fmt: (v) => `${v.toFixed(2)}×`, hint: '越硬内陆越平、山脉越窄越矮;越软山越多越宽、高原多', field: { unit: '×', digits: 2 } },
   { key: 'north', name: '南北偏向', min: -1, max: 1, step: 0.05, fmt: northText, hint: '陆地多长在哪个半球', field: { mul: 100, signs: ['南', '北'], zero: '均匀' } },
+  // 技术路线不在这里:挪到「打造文明」的设置里(Studio 第 2 步,和推演年数 / 天灾 / 规则排在一起)
 ];
+
+/** 技术路线的滑条说法(下标 = WorldParams.tech) */
+export const TECH_LABELS: Record<number, string> = { 0: '现实', 1: '魔法', 2: '修真' };
 
 /** 大陆五样都是默认的(= 按种子来) */
 export const contDefault = (p: WorldParams) => p.continents === 0 && p.gather === 0 && p.rugged === 1 && p.hardness === 1 && p.north === 0;
@@ -93,8 +99,7 @@ export const YEARS_SWITCH = `推演超过 ${END_YEAR_DEFAULT} 年`;
 /** 打开开关时滑条先停在哪 */
 export const YEARS_ON = 10000;
 /** 开关下面一直显示的那段说明 */
-export const YEARS_NOTE =
-  '近现代、现代、未来整体还在开发中，帝国的衰退和科技的发展也在设计当中，历史推演超过3000年后会陷入低价值的循环，如果你理解并且接受这种情况可以选择开启该选项最高推演至6万年。';
+export const YEARS_NOTE = '近现代/未来仍在开发，历史超过3000年会进入低价值循环；接受这一点可开启，最高 6 万年。';
 /**
  * "三千年的历史":3000 年的世界照旧,推得更久的写真实年数("60000 年的历史")。
  * gap:接在汉字后面(不是标点后面)时数字前空一格("推演它 60000 年")
@@ -107,3 +112,9 @@ export function yearsSpan(end: number, gap = false): string {
 export function paramsSide(p: WorldParams): string {
   return `陆地 ${Math.round(p.landFraction * 100)}%，${p.continents ? `${p.continents} 块大陆` : `${p.plates} 个板块`}`;
 }
+
+/**
+ * 星系这一层的参数:现在只在「星系与天体」/「星系参数」面板里改,
+ * 不再出现在「世界参数」那排滑条里(同一批数据只留一个入口)。
+ */
+export const SYSTEM_LEVEL_KEYS: readonly BaseParamKey[] = ['astro', 'system', 'arch', 'planets', 'gas', 'moons', 'impact', 'life', 'home', 'tilt', 'rotation', 'geo', 'mag', 'salt'];

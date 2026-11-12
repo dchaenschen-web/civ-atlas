@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 网址里记着的东西(App 用):
  *   readUrl       打开网页时读一次网址:世界参数、底图和填色、分享链接、作品墙、投影和经纬网、生成器版本、推演年数
  *   writeViewUrl  换了底图 / 填色 / 卫星画法写进网址
@@ -9,6 +9,7 @@
 import { DEFAULT_PARAMS, type WorldParams } from '../../gen/world';
 import { EMPTY_EDITS, cleanEndYear } from '../../gen/edits';
 import { GEN_KEY, PARAM_RANGE, decodeMomentHash, isContourKind, isMomentHash, isShareHash } from '../../gen/savefile';
+import type { BaseParamKey } from '../../gen/params';
 import { LAYERS, type LayerId } from '../../render/layers';
 import { wrapLon } from '../../render/projection';
 import type { SurfaceLook } from '../../render/surface';
@@ -24,7 +25,7 @@ import { draftTarget, storedTarget, yearsEdits, type FirstRoute, type Target } f
 export function readUrl() {
   const q = new URLSearchParams(location.search);
   const params: WorldParams = { ...DEFAULT_PARAMS };
-  for (const k of Object.keys(DEFAULT_PARAMS) as (keyof WorldParams)[]) {
+  for (const k of Object.keys(DEFAULT_PARAMS) as BaseParamKey[]) {
     const v = q.get(k);
     // 和读存档一样:超出合理范围的调回范围内(手改的网址里可能是 0 或特别大的数)
     const n = v === null || v.trim() === '' ? NaN : Number(v);

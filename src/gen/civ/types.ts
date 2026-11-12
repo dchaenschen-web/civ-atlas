@@ -211,7 +211,7 @@ export interface Settlement {
    * 全球大疫(pandemic.ts):染疫记 plague、疫后凋敝里"疫气复作、流亡"记 slump,都带 until = 那场的凋敝结束那年:
    * 无人收拾,凋敝结束以前不长回来,之后照常按 SACK_RECOVER 淡去(growth.ts 的 populationAt);染疫的那条另带 pan = 第几场瘟疫(史事 pandemic 的 war 列)
    */
-  sacks?: { year: Year; loss: number; cause?: 'famine' | 'plague' | 'quake' | 'slump'; from?: number; until?: Year; pan?: number }[];
+  sacks?: { year: Year; loss: number; cause?: 'famine' | 'plague' | 'quake' | 'volcano' | 'slump' | 'impact'; from?: number; until?: Year; pan?: number }[];
   /**
    * 阶段 3 城市兴衰:这座城是在哪座被毁的城(Settlement id)的故址上重建的(同一州、同一地块)。
    * 同族重建沿用旧名;换了民族的另起新名。不是重建的 = 不给
@@ -492,7 +492,7 @@ export type AnnalKind =
  *   revolution:议立宪 / 废君谈崩、起兵的人打不进国都,据地自立为共和国(史事 split 的 cause,reform.ts;紧跟在那条 council 后面);
  *   surrender 强国打下国都,余下的州一并归降、亡国(破都纳降,wars.ts;fall 的 cause)
  */
-export type AnnalCause = 'expand' | 'claim' | 'chaos' | 'prey' | 'resource' | 'betray' | 'punish' | 'ally' | 'rescue' | 'lapse' | 'abandon' | 'vassal' | 'quell' | 'collapse' | 'great' | 'quake' | 'warlord' | 'broke' | 'heir' | 'slain' | 'captured' | 'withdrew' | 'pandemic' | 'breach' | 'peace' | 'renew' | 'deposed' | 'fled' | 'decree' | 'divert' | 'unrest' | 'plagued' | 'minor' | 'regent' | 'plunder' | 'trek' | 'spring' | 'revolution' | 'surrender';
+export type AnnalCause = 'expand' | 'claim' | 'chaos' | 'prey' | 'resource' | 'betray' | 'punish' | 'ally' | 'rescue' | 'lapse' | 'abandon' | 'vassal' | 'quell' | 'collapse' | 'great' | 'quake' | 'volcano' | 'impact' | 'warlord' | 'broke' | 'heir' | 'slain' | 'captured' | 'withdrew' | 'pandemic' | 'breach' | 'peace' | 'renew' | 'deposed' | 'fled' | 'decree' | 'divert' | 'unrest' | 'plagued' | 'minor' | 'regent' | 'plunder' | 'trek' | 'spring' | 'revolution' | 'surrender';
 
 /**
  * 一条史事(阶段 3):推演里各事件处理函数用 CivSim.record 往 Civ.annals 里记,编年史(界面上的事件列表)只读它。

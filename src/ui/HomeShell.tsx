@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 首页(我的世界)先出来的那一份:打开网站时就停在我的世界(homeStart.ts 的 plainHome)时,主程序 App.tsx 还在后台下载,
  * 先由这里把这一页放出来。用的就是 App 在我的世界时放的那几样(同一个 MyWorlds、新建世界弹窗、账号窗、提示条……,
  * 外面同样一层 .app),看起来、点起来和 App 里的一样。
@@ -15,10 +15,11 @@
  *
  * 和 App 一样在这里也做的:账号里的世界列表、AI 接入(开了就一直开着,App 挂上以后接着用)、页面缩放的拦截、⌘S 不弹浏览器的"存储网页"。
  */
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MyWorlds } from './MyWorlds';
 import { GalleryPage } from './Gallery';
-import { NewWorldDialog } from './NewWorldDialog';
+// 新建世界弹窗按需下载:首页先不带上它(首屏体积预算)
+const NewWorldDialog = lazy(() => import('./NewWorldDialog').then((m) => ({ default: m.NewWorldDialog })));
 import { AccountHost, setGoHome } from './AccountDialogs';
 import { SameWorldHost } from './sameWorldAsk';
 import { AiSettingsHost } from './AiSettings';
@@ -297,6 +298,7 @@ export function HomeShell({ onLeave, loadFailed = 0 }: { onLeave: LeaveHome; loa
       <SameWorldHost phone={narrow} />
       <TipLayer />
       {newDlg && (
+        <Suspense fallback={null}>
         <NewWorldDialog
           phone={narrow}
           rules={newDlg.rules}
@@ -308,6 +310,7 @@ export function HomeShell({ onLeave, loadFailed = 0 }: { onLeave: LeaveHome; loa
           onStart={(start) => leave({ kind: 'dialog', start })}
           wait={waiting?.kind === 'dialog' ? { pct } : undefined}
         />
+        </Suspense>
       )}
       {dropping && (
         <div className="drop-hint">

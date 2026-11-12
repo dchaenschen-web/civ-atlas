@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界概览浮层(WorldOverview.tsx)开没开、在哪一页。别处要打开某一页直接调:
  *
  *   openOverview()                               打开(停在上次那一页)
@@ -24,9 +24,9 @@
 import { getChronicle, getCivTime, pausePlayback, setChronicle, setCivTime, subscribeChronicle, subscribeCivTime, type ChronicleView, type CivTime } from './civView';
 import { createListeners, createStore } from './createStore';
 
-export type OverviewTab = 'countries' | 'cultures' | 'chronicle' | 'people' | 'records' | 'marks' | 'outline' | 'interventions' | 'genesis';
+export type OverviewTab = 'countries' | 'cultures' | 'chronicle' | 'people' | 'records' | 'marks' | 'outline' | 'interventions' | 'system' | 'sky' | 'tech' | 'genesis';
 
-export const OVERVIEW_TABS: readonly OverviewTab[] = ['countries', 'cultures', 'chronicle', 'people', 'records', 'marks', 'outline', 'interventions', 'genesis'];
+export const OVERVIEW_TABS: readonly OverviewTab[] = ['countries', 'cultures', 'chronicle', 'people', 'records', 'marks', 'outline', 'interventions', 'system', 'sky', 'tech', 'genesis'];
 
 export interface OverviewState {
   open: boolean;

@@ -209,8 +209,8 @@ export function reignFacts(civ: Civ, x: Person): ReignFacts | null {
     if (s.ended !== undefined && s.ended > from && s.ended <= until && ownAt(s.ended - 0.25)[s.region] === pid) ruined.push({ year: s.ended, kind: '城', text: `${s.name}被毁` });
     for (const k of s.sacks ?? []) {
       if (!k.cause || k.year < from || k.year > until || ownAt(k.year)[s.region] !== pid) continue;
-      // 地震、大水、大旱记的都是 quake,照震中那州定是哪样(和编年史一样)
-      const what = k.cause === 'quake' ? quakeWord(civ.regions, k.from ?? s.region) : CAUSE[k.cause];
+      // 地震、大水、大旱记的都是 quake,照震中那州定是哪样(和编年史一样);火山另记一种
+      const what = k.cause === 'quake' ? quakeWord(civ.regions, k.from ?? s.region) : k.cause === 'volcano' ? '火山' : k.cause === 'impact' ? '陨星' : CAUSE[k.cause as keyof typeof CAUSE];
       let l = sacks.get(what);
       if (!l) sacks.set(what, (l = []));
       l.push({ year: k.year, region: s.region, city: s.id });

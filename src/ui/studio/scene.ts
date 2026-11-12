@@ -93,6 +93,12 @@ export class StudioScene {
   tilt = 0;
   spin = false;
   markA = 0;
+  /** 太阳方向(球面晨昏线用;Studio 按当前行星位置算好塞进来) */
+  /** 太阳直射经度/纬度(弧度;Studio 按行星位置算) */
+  sunLon = 0;
+  sunLat = 0;
+  /** 星环(没有 = 不画;Studio 按当前天体算) */
+  rings: { innerR: number; outerR: number; opacity: number; color: [number, number, number]; gap: number; gapAt: number; tiltDeg: number } | null = null;
   /** 放大倍数(新建界面一直是 1;作品墙上看地图作品时的 + −) */
   zoom = 1;
   /** 照手绘图那一页:地图上方留出切换条、下方留出一句提示(见 layout.ts 的 fitPose) */
@@ -321,6 +327,9 @@ export class StudioScene {
       mix: this.mix,
       markA: this.markA,
       grid: getGraticuleLines(),
+      sunLon: this.sunLon,
+      sunLat: this.sunLat,
+      rings: this.rings,
     };
     this.gl.draw(f);
     this.hooks.frame({ cx: p.cx, cy: p.cy, r: p.k * p.m, m: p.m, hh: p.hh, tex: this.a, mix: this.mix });

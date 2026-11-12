@@ -1,8 +1,9 @@
-/**
+﻿/**
  * 并排试推画地图要的那一张:开一个生成世界的后台线程(和打开世界用的同一个,src/worker.ts),只生成地形、铺像素、不推文明
  * (generate 带 skipCiv),交回来就关掉线程。推历史的线程(growThread.ts)按同样的参数生成同一张地图,两边对得上。
  * 地图符号的规划(手绘画风的山、树)线程里一起算好交来,记给画图的代码,主线程不用再算。
  */
+import { systemOpt } from '../../gen/systemState';
 import type { WorkerRequest, WorkerResponse } from '../../worker';
 import type { World } from '../../gen/world';
 import type { Raster } from '../../gen/raster';
@@ -42,6 +43,6 @@ export function makeDrawMap(map: GrowMap, progress: (stage: string, pct: number)
       resolve({ world: m.world, raster: m.raster });
     };
   });
-  w.postMessage({ type: 'generate', id: 1, scale: 1, params: map.params, ...(map.terrain ? { terrain: map.terrain } : {}), ...(map.sketch ? { sketch: map.sketch } : {}), skipCiv: true } satisfies WorkerRequest);
+  w.postMessage({ type: 'generate', id: 1, scale: 1, params: map.params, ...systemOpt(), ...(map.terrain ? { terrain: map.terrain } : {}), ...(map.sketch ? { sketch: map.sketch } : {}), skipCiv: true } satisfies WorkerRequest);
   return { done, stop };
 }

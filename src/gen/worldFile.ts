@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 打包、读世界文件(格式见 worldFormat.ts)。
  *
  * 用法:
@@ -20,7 +20,7 @@ import { parseSave, type SaveFile } from './savefile';
 import { makePart, partBytes, sha256, unpackValue, type SnapshotPart } from './snapshot';
 import type { World } from './world';
 import { MIGRATIONS, currentSchema, migratePart, type MigrationTable } from './worldMigrate';
-import { parseManifest, validateAuthor, validateChronicle, validateCiv, validateEras, validateFlags, validateThumb, validateWorld, worldHeadLimit, worldPartLimit } from './worldValidate';
+import { parseManifest, validateAuthor, validateChronicle, validateCiv, validateEras, validateFlags, validateSystem, validateThumb, validateWorld, worldHeadLimit, worldPartLimit } from './worldValidate';
 import { ZIP_LOCAL_MAX_BYTES, ZIP_UPLOAD_MAX_BYTES, parseZip, writeZip } from './zipStore';
 import {
   KNOWN_PARTS,
@@ -37,6 +37,7 @@ import {
   type WorldPlugin,
   type WorldReaders,
   type WorldRevision,
+  type SystemContent,
 } from './worldFormat';
 
 /** 地形大事以后的一段世界:不带网格(和地图同一套)、不带回放快照 */
@@ -66,6 +67,8 @@ export interface WorldValues {
   author?: AuthorContent | null;
   /** 封面(JPEG 的字节);没有 = 不给 */
   thumb?: Uint8Array | null;
+  /** 星系块(逐行星/卫星覆盖表、小行星带、撞击结算);单行星世界没有 = 不写 */
+  system?: SystemContent | null;
 }
 
 /** 插件放的附加数据:只当字节留着,看世界用不着 */
@@ -133,17 +136,24 @@ export async function packThumb(bytes: Uint8Array, migrations?: MigrationTable):
   return { info: { name: 'thumb', file: fileOf('thumb', 'none'), schema: currentSchema('thumb', migrations), sum, bytes: bytes.length, zip: 'none', need: 'extra' }, data: bytes };
 }
 
-/** 去掉回放快照(不存)、各段世界的网格(和地图同一套) */
+/**
+ * 去掉回放快照(不存)、各段世界的网格(和地图同一套)、星球系(派生数据,按 params 重算,见 gen/astro.ts 的 astroOf)
+ */
 function mapValue(map: World): World {
-  return { ...map, history: [] };
+  // 星球系(astro)是派生数据;逐行星覆盖表(system)存进 system 块,地图里不重复存
+  const { astro: _astro, system: _system, ...rest } = map;
+  void _astro;
+  void _system;
+  return { ...rest, history: [] };
 }
 
 function erasValue(e: WorldEras): WorldEras {
   return {
     baseKey: e.baseKey,
     eras: e.eras.map(({ key, world }) => {
-      const { mesh: _mesh, ...rest } = world as Omit<World, 'mesh'> & { mesh?: unknown };
+      const { mesh: _mesh, astro: _astro, ...rest } = world as Omit<World, 'mesh' | 'astro'> & { mesh?: unknown; astro?: unknown };
       void _mesh;
+      void _astro;
       return { key, world: { ...rest, history: [] } };
     }),
   };
@@ -206,6 +216,7 @@ export async function packWorldParts(input: PackInput): Promise<PackedWorld> {
   if (input.eras?.eras.length) parts.push(await packKnown('eras', erasValue(input.eras)));
   parts.push(await packKnown('civ', input.civ), await packKnown('chronicle', input.chronicle), await packKnown('flags', input.flags));
   if (input.author) parts.push(await packKnown('author', input.author));
+  if (input.system) parts.push(await packKnown('system', input.system));
   if (input.thumb) parts.push(await packThumb(input.thumb));
   for (const x of input.extras ?? []) {
     if (KNOWN_PARTS.has(x.name)) throw new Error(`附加数据不能叫 ${x.name}`);
@@ -301,6 +312,8 @@ function isKept(p: WorldPartInfo, options: OpenOptions): boolean {
 /** 解开的世界 */
 export interface WorldContent extends WorldValues {
   eras: WorldEras | null;
+  /** 星系块(没有 = 单行星世界) */
+  system: SystemContent | null;
   author: AuthorContent | null;
   thumb: Uint8Array | null;
   /** 配方照存档的办法读出来的那份(清理过);界面用这一份,不用清单里的原样 */
@@ -428,6 +441,12 @@ async function readContent(opened: OpenedWorldFile, spare: boolean): Promise<Sto
     };
     const chronicle = await story<ChronicleBlock>('chronicle', (v) => validateChronicle(v, civ));
     const flags = await story<FlagBook>('flags', (v) => validateFlags(v, civ));
+    // 星系块是可选的:没有这一块(单行星世界)= null,不能当坏文件
+    const rawSystem = await read('system');
+    if (rawSystem !== null) validateSystem(rawSystem);
+    const system = rawSystem as SystemContent | null;
+    // 覆盖表是星球的派生来源:读回来挂到地图上,astroOf 才会按它重算星球系
+    if (system) map.system = system.overrides;
     const got = await readAuthorPart(opened, read);
     if (got.trouble) skipped.push('author');
     const thumb = (await read('thumb', (b) => b)) as Uint8Array | null;
@@ -435,7 +454,7 @@ async function readContent(opened: OpenedWorldFile, spare: boolean): Promise<Sto
     const r = parseSave(JSON.stringify(manifest.recipe));
     if (!r.ok) broken(r.error);
     const warnings = got.trouble ? [...r.warnings, got.trouble === 'damaged' ? AUTHOR_DAMAGED : AUTHOR_SKIPPED] : r.warnings;
-    return { map, eras, civ, chronicle, flags, author: got.author, thumb, save: r.save, warnings, skipped, ...(got.trouble ? { authorTrouble: got.trouble } : {}) };
+    return { map, eras, civ, chronicle, flags, system, author: got.author, thumb, save: r.save, warnings, skipped, ...(got.trouble ? { authorTrouble: got.trouble } : {}) };
   } catch (err) {
     throw asWorldFileError(err);
   }
@@ -472,6 +491,7 @@ export async function rewriteWorldFile(opened: OpenedWorldFile, change: RewriteC
   if (v.chronicle) replaced.set('chronicle', await packKnown('chronicle', v.chronicle, table));
   if (v.flags) replaced.set('flags', await packKnown('flags', v.flags, table));
   if (v.author !== undefined) replaced.set('author', v.author ? await packKnown('author', v.author, table) : null);
+  if (v.system !== undefined) replaced.set('system', v.system ? await packKnown('system', v.system, table) : null);
   if (v.thumb !== undefined) replaced.set('thumb', v.thumb ? await packThumb(v.thumb, table) : null);
 
   const parts: PackedPart[] = [];

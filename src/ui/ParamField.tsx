@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 滑条右边能直接打字的数值框(新建弹窗、新建页左边「世界参数」、照手绘图第 3 步共用)。
  *
  * 平时写着现在的数(单位用浅灰字跟在后面:"33 %""1.00 ×""36 k",打字时也在);点进去直接改,回车或点别处算数,Esc 放弃。
@@ -229,3 +229,28 @@ export const CONT_RESET: Pick<WorldParams, 'continents' | 'gather' | 'rugged' | 
   hardness: DEFAULT_PARAMS.hardness,
   north: DEFAULT_PARAMS.north,
 };
+/** 有具体名字的几档(恒星类型/构型/生命/撞击频率…):渲染成分段按钮,点了直接生效 */
+export function OptionRow({ s, value, onCommit, disabled }: { s: SliderLike; value: number; onCommit: (v: number) => void; disabled?: boolean }) {
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }} role="radiogroup" aria-label={s.name} data-param={s.key}>
+      {(s.options ?? []).map((o) => {
+        const on = Math.round(value) === o.v;
+        return (
+          <button
+            key={o.v}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            data-opt={`${s.key}-${o.v}`}
+            disabled={disabled}
+            onClick={() => onCommit(o.v)}
+            className="ov-btn"
+            style={on ? { borderColor: '#5fa85f', color: '#5fa85f', background: 'rgba(95,168,95,0.12)' } : undefined}
+          >
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 改了地形、干预以后在后台重算(App 用):
  *   - 地形修改、草图一变:带着新地形重新生成世界(连同当时的干预重推文明;州、历史整个重来,改名和干预按稳定键尽量套上)
  *   - 编辑地形时不起名:收起编辑地形以后补推历史、起地名(startNames / releaseNames / namesDone)
@@ -7,6 +7,7 @@
  * 界面的状态还在 App 里,要读、要改的 ref 和 setter 由 App 按块传进来(ref 分块见 ./worldRefs.ts);
  * 每次渲染照原来那样新建函数、填 ref 的 .current,交回给 App 的是线程回调要用的 namesDoneRef、terrainDoneRef 和收起编辑地形时调的 releaseNames
  */
+import { systemOpt } from '../../gen/systemState';
 import { useEffect, useRef } from 'react';
 import type { WorkerRequest } from '../../worker';
 import type { World } from '../../gen/world';
@@ -128,7 +129,7 @@ ${s.image.cells}` : null);
     if (getChronicle().polity !== null) setChronicle({ polity: null });
     if (getPeople().polity !== null) setPeople({ polity: null });
     // 线程还留着地图上那张整图(baseKeyRef):只重铺、只交回变了的那块
-    send({ type: 'generate', id, params: genParams.current, scale: 1, terrain: [...t], sketch: sk, interventions: [...interventions], ...upsOpt(ups), ...namesOpt(civNames.current), ...yearsOpt(civYears.current), ...setupOpt(civSetup.current), keep: getStage().stage === 'draft', ...(baseKeyRef.current ? { from: baseKeyRef.current } : {}), ...(skipCiv ? { skipCiv: true as const } : {}) });
+    send({ type: 'generate', id, params: genParams.current, scale: 1, terrain: [...t], sketch: sk, ...systemOpt(), interventions: [...interventions], ...upsOpt(ups), ...namesOpt(civNames.current), ...yearsOpt(civYears.current), ...setupOpt(civSetup.current), keep: getStage().stage === 'draft', ...(baseKeyRef.current ? { from: baseKeyRef.current } : {}), ...(skipCiv ? { skipCiv: true as const } : {}) });
   }, [edits.terrain, edits.sketch, baseData, send]);
 
   /** 补推地图上这个世界的历史、起地名(编辑地形时生成的没推历史):带着和生成时一样的干预、地形大事、地名风格、推演年数、拓荒、起源 */
@@ -138,7 +139,7 @@ ${s.image.cells}` : null);
     const nid = ++namingSeq.current;
     naming.current = { nid, t0: performance.now() };
     setNamingPct(0);
-    send({ type: 'civOnly', id: reqId.current, nid, params: p, terrain: [...genTerrain.current], sketch: genSketch.current, interventions: [...civEdits.current], ...upsOpt(civUps.current), ...namesOpt(civNames.current), ...yearsOpt(civYears.current), ...setupOpt(civSetup.current) });
+    send({ type: 'civOnly', id: reqId.current, nid, params: p, ...systemOpt(), terrain: [...genTerrain.current], sketch: genSketch.current, interventions: [...civEdits.current], ...upsOpt(civUps.current), ...namesOpt(civNames.current), ...yearsOpt(civYears.current), ...setupOpt(civSetup.current) });
   };
   const startNamesRef = useRef(startNames);
   startNamesRef.current = startNames;
@@ -264,6 +265,7 @@ ${s.image.cells}` : null);
     setResim({ year: stepOnly ? 0 : year, end: play ? play.year : newEnd, ...(text ? { text } : {}) });
     send({
       type: 'resim',
+      ...systemOpt(),
       id: reqId.current,
       seq,
       params: genParams.current,

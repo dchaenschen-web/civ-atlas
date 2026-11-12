@@ -1,0 +1,88 @@
+给下个会话的交接 · 工作纪律
+============================
+项目：E:\世界模拟器\civ-atlas-main（civ-atlas 世界生成 UI 重构）
+本文件是上一个会话的交接；先读完再动手。进度清单以 docs/TODOLIST-世界生成UI.txt 为准。
+
+一、当前状态（截至交接时）
+--------------------------
+S0 数据底座、S1 全屏树页、S2 新建入口、S3 Studio 3D 预览、S4 手绘图资产、S5 三档视图+时间轴+天空层+地表边界、
+S6 3D 星图、S7 收尾（lazy + 文档）—— 功能全部写完，tsc 0，node-verify 144 项全过。
+
+已验证（本轮实跑）：
+  1. node_modules\.bin\tsc.CMD --noEmit          → 0 错误
+  2. cmd /c "scripts\verify-node.bat"           → 全部通过 146 项（含新增 S4/S5/S6/S7 用例，见下）
+     其中 33 节是首屏分块守护：从 src/main.tsx 只走静态 import 走遍 274 个模块，
+     确认 StarMap / SkyLayer / BorderMap 都不在主 chunk、且都是 React.lazy 动态 import。
+
+没验证（都要提权，等用户回来再做）：
+  - vite build（沙箱里 esbuild 删临时文件 Access is denied）
+  - tsx scripts\first-load.ts 首屏体积（沙箱 spawn EPERM）
+  - 浏览器截图（树页 / 3D 系统预览 / 三档视图 / 星图 / 手绘图导入）
+
+没做的功能（**已经没有**；S5 最后一条「本星系可叠地表边界」本轮补上了）
+  - 地表边界:ui/BorderMap.tsx(海陆底图 + 国界折线,年份跟时间轴) + ui/borderOverlay.ts(州链→折线)
+      + gen/civ/territoryAt.ts(谁占着地,node 可测)。
+    折线本身要浏览器截图确认;gen 层的归属计数已在 node-verify 验过。
+
+二、本轮新增/改动的关键文件
+---------------------------
+gen/sketchAssets.ts       手绘图资产:尺寸/体积约束、IndexedDB 存取、.civsketch 资产包打包/拆包
+ui/sketchAssetStore.ts    浏览器侧导入(缩放/WebP 压缩/认图/水合)、draftWorldIdOf、资产包导出导入
+gen/skyLayer.ts           天空层纯计算:太阳方位、直射经度、晨昏线、卫星周期(开普勒)、伴星
+ui/SkyLayer.tsx           天空层画布(地球仪 + 昼夜 + 太阳/卫星/伴星方位)
+ui/StarMap.tsx            3D 星图(WebGL2 点云 + Canvas 回退,100 ly/42 颗,点选弹信息卡,背景与邻星同一套投影)
+render/starMapGl.ts       星图 WebGL2 点渲染(渲染器只建一次,导出 StarMapRenderer 接口)
+ui/SystemPage.tsx         三档视图 + 时间轴 + 天空层 + 照图行星缩略图(gen/sketch 传进 worker)
+ui/SystemTimelineView.tsx 时间轴控件(0…endYear、播放、1/4/16×)
+ui/systemClock.ts         时间轴纯函数(clampSystemYear/timelineStep/SystemView)
+ui/SystemGlobe.tsx        年份驱动 positionAtAU、真实比例/对数切换、藏卫星、双固态质心+互绕虚线
+ui/SystemPreview3D.tsx    Studio 的 3D 系统预览(星系 ↔ 地表详情)
+ui/studio/Studio.tsx      S3:astro=1 时进来自动打开 3D 系统预览一次
+ui/SystemEditor.tsx       右键删行星/卫星、照图导入按钮、地形编辑原图底图、资产包按钮
+gen/astroWorlds.ts        planetSurface 多了可选 sketch 参数(照图长地形)
+gen/system.ts             moonSurface 多了可选 sketch 参数
+render/planetViz.ts       缩略图输入多了 gen / sketch(照图行星缩略图跟着变)
+ui/BorderMap.tsx          地表档:海陆底图 + 这一年的国界折线(可收起,年份跟时间轴)
+ui/borderOverlay.ts       州链 → 国界折线(和主地图同一套算法,不接海崖平滑)
+gen/civ/territoryAt.ts    谁占着地(politiesWithLand / politiesAt,纯 gen,node 可测)
+scripts/node-verify.ts    新增 28–32 节:手绘图约束/资产包往返/照图生成、天空层与时间轴、星图数据、地表边界归属
+
+三、权限与流程纪律（血泪教训）
+------------------------------
+- 无头浏览器/构建在受限沙箱会 `spawn EPERM` / `Access is denied`，不是代码 bug；
+  必须单独一条命令 + sandbox_permissions:"danger-full-access"，会弹一次审批。
+- 用户出门期间不要发起提权操作；build / 首屏 / 截图都留到用户回来。
+- 一条命令别跑太久（>10 分钟易被终止）；重流程拆成：生成→截图、保存→读档 两条。
+- 到了本地 02:00 一律暂停任务（TODOLIST 第十二节）。
+- 不虚构完成：没跑过的验证不能说通过。
+- 不删文件、不用 Substring 粗暴改文件；优先 edit 工具。
+- 改动公共接口/产品交互前先问用户。
+
+四、工程约束（违反会破坏兼容）
+------------------------------
+- 默认世界必须与旧版逐字节一致：关星球系路径不经过新代码；金标 3 种子 × 47 字段守护。
+- 存档兼容：SaveFile.system / systemSpec 双写；parts/system.gz 格式不变；新增字段必须可选。
+- 照手绘图：存档只写 BodyGen.sketchId（≤64 个 [A-Za-z0-9:_-]），图片与认出的格子图只在 IndexedDB。
+- 首页预算 280 KB gzip：新重件一律 React.lazy + Suspense（StarMap / SkyLayer 已照此做）。
+- 生成确定性：所有新参数进缓存键；不能用 Math.random/Date。
+- 带 sketch 的生成不走缓存（草图对象没有稳定指纹，现算）。
+
+五、下次开工顺序
+----------------
+1. 先跑 tsc、verify-node 确认基线（不需要提权）。
+2. 用户在场时一次一条提权跑：vite build → first-load.ts → 浏览器截图（树页 / 3D 预览 / 三档 / 星图）。
+3. 首屏若超 280 KB：先看 StarMap/SkyLayer 是否真的分块了，再看 SystemPage 静态依赖。
+4. 补「本星系可叠地表边界」（S5 最后一条）再谈收尾。
+5. 浏览器实测手绘图：导入 → 生成 → 存档 → 重开 → 导出资产包 → 再导入。
+
+六、关键文件
+------------
+（见第二节；下面只列最常用的入口）
+gen/astroDesign.ts      BodyGen/覆盖表/rebuildDesign
+gen/astroWorlds.ts      planetWorldParams/planetSurface(sketch)
+gen/system.ts           moonWorldParams/moonSurface(sketch)
+gen/orbitTime.ts        positionAtAU（系统视图/时间轴/天空层共用）
+gen/neighbors.ts        100 光年邻近恒星（星图数据）
+render/systemGlobe3d.ts 3D 星系渲染器
+ui/studio/Studio.tsx    Studio（S3 接入点）
+out/verify-tree.ts      浏览器验证脚本（带 crash/pageerror 监听）

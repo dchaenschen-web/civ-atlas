@@ -114,7 +114,11 @@
  * 纯计算,不碰 DOM(Node 里可测)。
  */
 import type { World } from './world';
-import { DEFAULT_PARAMS, type WorldParams } from './params';
+import { DEFAULT_PARAMS, type BaseParamKey, type WorldParams } from './params';
+import type { SystemOverrides } from './astroDesign';
+import type { StoredLayers } from './systemLayers';
+import { layersOfOverrides, overridesOfLayers } from './systemLayers';
+import { setCurrentSystem } from './systemState';
 import { cleanMix, sameMix } from './names/mix';
 import { END_YEAR_DEFAULT, END_YEAR_MAX, GENERATOR_CHANGES, GENERATOR_VERSION, MARKS_MAX, MARK_REGIONS_TOTAL, NAME_MAX, YEAR_TICKS, aiNameKeys, cleanCivSeed, cleanEndTick, cleanEndYear, endAtOf, endParamOf, keptMapOf, playAt, cleanMapRef, cleanMark, cleanPlay, cleanPlayFrom, cleanBranches, branchPlay, playState, cleanAdvance, advanceOf, sameAdvance, cleanFollow, cleanOutline, endYearOf, freeMarkId, resolveKey, type AdvanceSettings, type AiNameMark, type AuthorMark, type GeneratorChange, type Intervention, type Outline, type PlayBranches, type PlayState, type TerrainOp, type Upheaval, type WorldEdits } from './edits';
 import type { Civ } from './civ/types';
@@ -169,6 +173,16 @@ export function saveFormatOf(edits: WorldEdits): 1 | 2 | 3 | 4 | 5 {
   return sub ? SAVE_FORMAT_TICKS : SAVE_FORMAT_YEARS;
 }
 
+/** 每个天体自己那份:世界种子偏移 + 文明(最多 4 个);主天体仍用顶层 params/edits */
+export interface SaveBody {
+  /** 天体 id:`p0` 行星 0、`m0-1` 行星 0 的第 1 颗卫星(和树/覆盖表下标一致) */
+  id: string;
+  /** 这颗天体世界用的种子偏移(不写 = 由主种子 + id 派生) */
+  seedShift?: number;
+  /** 这颗天体上的文明(最多 4;结构由上层文明系统决定,这里只做形状校验) */
+  civs?: unknown[];
+}
+
 export interface SaveFile {
   app: '文明与地图';
   format: 1 | 2 | 3 | 4 | 5;
@@ -183,6 +197,12 @@ export interface SaveFile {
   title?: string;
   /** 看这个世界用的投影和中央经线;没有 = 等距圆柱、0° */
   view?: SaveView;
+  /** 逐行星/卫星覆盖表(星系结构编辑的结果);没有 = 单行星世界(和以前一样) */
+  system?: SystemOverrides;
+  /** 每天体的世界/文明(步 11;不写 = 只有主天体,和以前一样) */
+  bodies?: SaveBody[];
+  /** 星系分层存档(SystemSpec 的持久化形态;存在时优先于 system,读不懂回落到 system) */
+  systemSpec?: StoredLayers;
   /** 底稿出处:从别人的分享链接另存来的 */
   origin?: SaveOrigin;
   /** 打开时看哪(只在分享里带;见文件头"moment") */
@@ -527,8 +547,9 @@ const PERSON_KEY_MAX = 96;
 /** 最多读多少面改过的旗 */
 const MAX_FLAGS = 5000;
 
-/** 参数的合理范围:存档里超出的调回范围内(比界面滑条宽;再大生成会慢到卡死) */
-export const PARAM_RANGE: Record<keyof WorldParams, [number, number]> = {
+/** 参数的合理范围:存档里超出的调回范围内(比界面滑条宽;再大生成会慢到卡死)。
+ *  只覆盖 DEFAULT_PARAMS 里那批"老参数";后来加的可选字段见 EXTRA_PARAM_RANGE。 */
+export const PARAM_RANGE: Record<BaseParamKey, [number, number]> = {
   seed: [-(2 ** 53), 2 ** 53],
   cells: [2000, 200000],
   landFraction: [0.02, 0.95],
@@ -541,10 +562,33 @@ export const PARAM_RANGE: Record<keyof WorldParams, [number, number]> = {
   rugged: [0.2, 2.5],
   hardness: [0.3, 3],
   north: [-1, 1],
+  // ---- 星球系、地质、技术路线与多天体(默认值 = 老世界:不生成星球系、和以前逐字节一样) ----
+  astro: [0, 1],
+  // 恒星类型的上限 = gen/astroDesign.ts 里 STAR_TYPES 的长度(这里写死数字,免得存档代码拉进生成代码)
+  system: [0, 5],
+  planets: [0, 6],
+  gas: [0, 4],
+  moons: [0, 12],
+  tilt: [0, 80],
+  rotation: [4, 200],
+  geo: [0.4, 3],
+  mag: [0, 2],
+  // 技术路线:上限 = gen/techPack.ts 的 TECH_PACK_MAX(这里写死数字,免得存档代码拉进推演代码)
+  tech: [0, 2],
+  // 星系构型:0 单星、1 双固态行星、2 双恒星、3 气态巨星的宜居卫星
+  arch: [0, 3],
+  // 生命:0 自动、1 有生物圈、2 无生命
+  life: [0, 2],
+  // 主行星取第几颗(0 = 自动)
+  home: [0, 6],
+  // 整系重掷
+  salt: [0, 999],
+  // 小行星带与陨击:0 关、1 自然、2 频繁
+  impact: [0, 2],
 };
 
 /** 参数在提示里的叫法 */
-export const PARAM_NAME: Record<keyof WorldParams, string> = {
+export const PARAM_NAME: Record<BaseParamKey, string> = {
   seed: '种子',
   cells: '精细度',
   landFraction: '陆地比例',
@@ -557,18 +601,82 @@ export const PARAM_NAME: Record<keyof WorldParams, string> = {
   rugged: '破碎度',
   hardness: '板块软硬',
   north: '南北偏向',
+  astro: '星球系',
+  system: '恒星类型',
+  planets: '固态行星数',
+  gas: '气态行星数',
+  moons: '卫星数',
+  tilt: '自转倾角',
+  rotation: '自转周期',
+  geo: '地质活跃度',
+  mag: '磁场强度',
+  tech: '技术路线',
+  arch: '星系构型',
+  life: '主行星生命',
+  home: '主行星',
+  salt: '整系重掷',
+  impact: '撞击频率',
 };
 
-const PARAM_KEYS = Object.keys(DEFAULT_PARAMS) as (keyof WorldParams)[];
+/** 后来加的参数:等于默认值时世界身份里不写(见下面的 LATER_KEYS) */
+const PARAM_KEYS = Object.keys(DEFAULT_PARAMS) as BaseParamKey[];
+
+// ---- 后来加的可选参数(恒星 / 子星系细化):不写 = 老行为;写了才进存档与世界身份 ----
+export type ExtraParamKey = 'starCount' | 'subSystem' | 'spectral' | 'sub' | 'lumClass' | 'homeMoon' | 'binaryTier';
+export const EXTRA_PARAM_RANGE: Record<ExtraParamKey, [number, number]> = {
+  starCount: [1, 2],
+  subSystem: [0, 3],
+  spectral: [0, 6],
+  sub: [0, 9],
+  lumClass: [0, 0],
+  homeMoon: [0, 12],
+  binaryTier: [0, 2],
+};
+export const EXTRA_PARAM_NAME: Record<ExtraParamKey, string> = {
+  starCount: '恒星数量',
+  subSystem: '子星系类型',
+  spectral: '光谱型',
+  sub: '子型',
+  lumClass: '光度级',
+  homeMoon: '主行星是哪颗卫星',
+  binaryTier: '双恒星构型',
+};
+const EXTRA_KEYS = Object.keys(EXTRA_PARAM_RANGE) as ExtraParamKey[];
 /** 后来加的参数(大陆参数):等于默认值时世界身份里不写,加之前存下的世界照样按身份找得到 */
-const LATER_KEYS = new Set<keyof WorldParams>(['continents', 'gather', 'rugged', 'hardness', 'north']);
+const LATER_KEYS = new Set<keyof WorldParams>([
+  'continents',
+  'gather',
+  'rugged',
+  'hardness',
+  'north',
+  'astro',
+  'system',
+  'planets',
+  'gas',
+  'moons',
+  'tilt',
+  'rotation',
+  'geo',
+  'mag',
+  'tech',
+  'arch',
+  'life',
+  'home',
+  'salt',
+  'impact',
+]);
 const written = (params: Partial<WorldParams>, k: keyof WorldParams) => !LATER_KEYS.has(k) || (params[k] ?? DEFAULT_PARAMS[k]) !== DEFAULT_PARAMS[k];
 
 /** 一个世界的身份(种子 + 全部参数,固定顺序;后来加的参数是默认值时不写):浏览器里按它存、按它找 */
 export function worldKey(params: WorldParams): string {
-  return PARAM_KEYS.filter((k) => written(params, k))
+  const base = PARAM_KEYS.filter((k) => written(params, k))
     .map((k) => `${k}=${params[k] ?? DEFAULT_PARAMS[k]}`)
     .join('&');
+  // 后来加的可选参数:只有写了才进身份(不写 = 和以前一模一样)
+  const extra = EXTRA_KEYS.filter((k) => params[k] !== undefined)
+    .map((k) => `${k}=${params[k]}`)
+    .join('&');
+  return base + (extra ? `&${extra}` : '');
 }
 
 /** 改了几处:改名条数 + 干预条数 + 地形修改处数 + 草图(画了算一处)+ 地形大事件数 + 作者标记个数 + 改过的旗面数 + 作者的人物个数 + 地名风格、推演年数、拓荒、起源、天灾、规则、文明种子、纪年、月份、逐年推演进度(各算一处)+ 逐年推演另开的几支(每支一处)*/
@@ -597,6 +705,200 @@ export function editCount(edits: WorldEdits): number {
   );
 }
 
+/** 覆盖表里每一项的合理范围(和设计层一致;超出就丢,不硬塞) */
+const SYS_LIM = { a: [0.01, 60], ecc: [0, 0.9], incDeg: [0, 90], nodeDeg: [0, 360], radius: [0.05, 20], mass: [0.001, 5000], periodDays: [0.01, 100000000], geo: [0, 1], mag: [0, 1.5], tilt: [0, 90], rotation: [0.5, 2000], life: [0, 2], reroll: [0, 999], moonCount: [0, 12], distance: [0.5, 2000] } as const;
+/** 恒星质量覆盖的范围(M☉) */
+const STAR_MASS_LIM = [0.05, 100] as const;
+/** 每个天体最多几份文明(步 11) */
+const SAVE_BODY_CIV_MAX = 4;
+const SYS_TERRAIN_MAX = 3000;
+
+/** 每天体存档:形状校验(id 白名单字符/长度、种子偏移范围、文明数组最多 4);重复 id 只留第一个 */
+function cleanBodies(raw: unknown): SaveBody[] | undefined {
+  if (!Array.isArray(raw) || !raw.length) return undefined;
+  const out: SaveBody[] = [];
+  const seen = new Set<string>();
+  for (const x of raw) {
+    if (!isObj(x)) continue;
+    const id = typeof x.id === 'string' ? x.id : '';
+    if (!/^[pm][0-9]+(-[0-9]+)?$/.test(id) || id.length > 16 || seen.has(id)) continue;
+    const body: SaveBody = { id };
+    const shift = x.seedShift;
+    if (typeof shift === 'number' && Number.isFinite(shift) && Math.abs(shift) <= 1e6) body.seedShift = Math.round(shift);
+    if (Array.isArray(x.civs)) body.civs = x.civs.slice(0, SAVE_BODY_CIV_MAX);
+    seen.add(id);
+    out.push(body);
+  }
+  return out.length ? out : undefined;
+}
+
+function cleanSystem(raw: unknown): SystemOverrides | undefined {
+  if (!isObj(raw)) return undefined;
+  const inRange = (k: keyof typeof SYS_LIM, v: unknown): number | undefined => {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+    const [lo, hi] = SYS_LIM[k];
+    return v >= lo && v <= hi ? v : undefined;
+  };
+  /** 每颗天体的地表参数(陆地比例/气温/降水/精细度):越界的丢掉 */
+  const cleanSurface = (v: unknown): Record<string, number> | undefined => {
+    if (!isObj(v)) return undefined;
+    const lim = { landFraction: [0.02, 0.98], temperature: [-40, 40], rainfall: [0, 5], cells: [200, 200000] } as const;
+    const out: Record<string, number> = {};
+    for (const k of Object.keys(lim) as (keyof typeof lim)[]) {
+      const x = v[k];
+      if (typeof x !== 'number' || !Number.isFinite(x)) continue;
+      const [lo, hi] = lim[k];
+      if (x < lo || x > hi) continue;
+      out[k] = k === 'cells' ? Math.round(x) : Math.round(x * 1000) / 1000;
+    }
+    return Object.keys(out).length ? out : undefined;
+  };
+  /** 手动改的星体名(恒星 / 行星下标 / 「行星:卫星」):按 cleanTitle 清长度与控制字符,编号不合法或空名字丢掉 */
+  const cleanBodyNames = (v: unknown): { star?: string; planets?: Record<string, string>; moons?: Record<string, string>; groups?: Record<string, string> } | undefined => {
+    if (!isObj(v)) return undefined;
+    const cleanMap = (raw: unknown, keyOk: (k: string) => boolean): Record<string, string> | undefined => {
+      if (!isObj(raw)) return undefined;
+      const out: Record<string, string> = {};
+      for (const k of Object.keys(raw).slice(0, 64)) {
+        if (!keyOk(k)) continue;
+        const nm = cleanTitle(raw[k], 12);
+        if (nm) out[k] = nm;
+      }
+      return Object.keys(out).length ? out : undefined;
+    };
+    const out: { star?: string; planets?: Record<string, string>; moons?: Record<string, string>; groups?: Record<string, string> } = {};
+    const star = cleanTitle(v.star, 12);
+    if (star) out.star = star;
+    const planets = cleanMap(v.planets, (k) => Number.isInteger(Number(k)) && Number(k) >= 0 && Number(k) <= 64);
+    if (planets) out.planets = planets;
+    const moons = cleanMap(v.moons, (k) => {
+      const parts = k.split(':');
+      if (parts.length !== 2) return false;
+      const p = Number(parts[0]);
+      const m = Number(parts[1]);
+      return Number.isInteger(p) && Number.isInteger(m) && p >= 0 && p <= 64 && m >= 0 && m <= 64;
+    });
+    if (moons) out.moons = moons;
+    // N13:子星系组名(键 = 组主天体下标)
+    const groups = cleanMap(v.groups, (k) => Number.isInteger(Number(k)) && Number(k) >= 0 && Number(k) <= 64);
+    if (groups) out.groups = groups;
+    return Object.keys(out).length ? out : undefined;
+  };
+  /** 每颗天体自己的生成参数(板块/造山/气候/精度/种子/生成方式):范围外或类型不对的丢掉 */
+  const cleanGen = (v: unknown): Record<string, number | string> | undefined => {
+    if (!isObj(v)) return undefined;
+    const lim = { plates: [2, 64], mountains: [0, 5], landFraction: [0.02, 0.98], temperature: [-40, 40], rainfall: [0, 5], cells: [200, 200000] } as const;
+    const out: Record<string, number | string> = {};
+    if (v.mode === 'random' || v.mode === 'image') out.mode = v.mode;
+    const seed = v.seed;
+    if (typeof seed === 'number' && Number.isFinite(seed) && seed >= 1 && seed <= 4294967295) out.seed = Math.floor(seed);
+    for (const k of Object.keys(lim) as (keyof typeof lim)[]) {
+      const x = v[k];
+      if (typeof x !== 'number' || !Number.isFinite(x)) continue;
+      const [lo, hi] = lim[k];
+      if (x < lo || x > hi) continue;
+      out[k] = k === 'cells' || k === 'plates' ? Math.round(x) : Math.round(x * 1000) / 1000;
+    }
+    const sketch = v.sketchId;
+    if (typeof sketch === 'string' && /^[A-Za-z0-9:_-]{1,64}$/.test(sketch)) out.sketchId = sketch;
+    return Object.keys(out).length ? out : undefined;
+  };
+  const cleanOne = (x: unknown, moon: boolean): Record<string, unknown> | null => {
+    if (!isObj(x)) return null;
+    const o: Record<string, unknown> = {};
+    const pi = x.index ?? x.planet;
+    const mi = x.moon;
+    if (moon) {
+      if (typeof x.planet !== 'number' || !Number.isInteger(x.planet) || x.planet < 0 || x.planet > 64) return null;
+      if (typeof mi !== 'number' || !Number.isInteger(mi) || mi < 0 || mi > 64) return null;
+      o.planet = x.planet;
+      o.moon = mi;
+    } else {
+      if (typeof pi !== 'number' || !Number.isInteger(pi) || pi < 0 || pi > 64) return null;
+      o.index = pi;
+    }
+    for (const k of Object.keys(SYS_LIM) as (keyof typeof SYS_LIM)[]) {
+      const v = inRange(k, x[k]);
+      if (v !== undefined) o[k] = v;
+    }
+    for (const k of ['locked', 'home'] as const) if (typeof x[k] === 'boolean') o[k] = x[k];
+    // N2:行星在子星系里的角色(只认这四个)
+    if (!moon && (x.role === 'planet' || x.role === 'binaryCompanion' || x.role === 'gasParent' || x.role === 'habitableMoon')) o.role = x.role;
+    if (!moon && (x.type === 'rocky' || x.type === 'dwarf' || x.type === 'subNeptune' || x.type === 'gasGiant' || x.type === 'iceGiant')) o.type = x.type;
+    if (moon && (x.type === 'rocky' || x.type === 'ice' || x.type === 'dwarf')) o.type = x.type;
+    if (moon) delete o.moonCount;
+    const surf = cleanSurface(x.surface);
+    if (surf) o.surface = surf;
+    const gen = cleanGen(x.gen);
+    if (gen) o.gen = gen;
+    if (Array.isArray(x.terrain)) {
+      // 逐处过 cleanTerrainOp(和世界自己的地形修改同一套表),认不出的丢掉
+      const ops = x.terrain.slice(0, SYS_TERRAIN_MAX).map((t) => cleanTerrainOp(t)).filter((t): t is TerrainOp => !!t);
+      if (ops.length) o.terrain = ops;
+    }
+    return o;
+  };
+  const planets: Record<string, unknown>[] = [];
+  const moons: Record<string, unknown>[] = [];
+  const seenP = new Set<number>();
+  const seenM = new Set<string>();
+  if (Array.isArray(raw.planets)) {
+    for (const x of raw.planets) {
+      const o = cleanOne(x, false);
+      if (!o) continue;
+      const i = o.index as number;
+      if (seenP.has(i)) continue;
+      seenP.add(i);
+      planets.push(o);
+    }
+  }
+  if (Array.isArray(raw.moons)) {
+    for (const x of raw.moons) {
+      const o = cleanOne(x, true);
+      if (!o) continue;
+      const key = `${o.planet}.${o.moon}`;
+      if (seenM.has(key)) continue;
+      seenM.add(key);
+      moons.push(o);
+    }
+  }
+  // 手动改的星体名挂在星系这一层(不是某颗行星上);只有改名、没有覆盖表时也算有星系覆盖
+  const names = cleanBodyNames(raw.bodyNames);
+  // 恒星质量覆盖:越界的丢掉;只有质量、没有别的覆盖时也算有星系覆盖
+  let star: { mass?: number; companionMass?: number; sepAU?: number; outerSepAU?: number } | undefined;
+  if (isObj(raw.star)) {
+    const out: { mass?: number; companionMass?: number; sepAU?: number; outerSepAU?: number } = {};
+    for (const k of ['mass', 'companionMass'] as const) {
+      const v = raw.star[k];
+      if (typeof v === 'number' && Number.isFinite(v) && v >= STAR_MASS_LIM[0] && v <= STAR_MASS_LIM[1]) out[k] = v;
+    }
+    const sep = raw.star.sepAU;
+    if (typeof sep === 'number' && Number.isFinite(sep) && sep >= 0.005 && sep <= 100) out.sepAU = sep;
+    const osep = raw.star.outerSepAU;
+    if (typeof osep === 'number' && Number.isFinite(osep) && osep >= 50 && osep <= 50000) out.outerSepAU = osep;
+    if (Object.keys(out).length) star = out;
+  }
+  // R2:子星系显式成员(role 白名单 + 整数成员;成员乱掉的组丢掉)
+  const groupsRaw = raw.groups;
+  let groups: SystemOverrides['groups'];
+  if (Array.isArray(groupsRaw)) {
+    const ok: { id: number; role: 'planet' | 'binaryPair' | 'gasSystem' | 'habitableMoonSystem'; members: number[] }[] = [];
+    for (const g of groupsRaw) {
+      if (!isObj(g)) continue;
+      const role = g.role;
+      if (role !== 'planet' && role !== 'binaryPair' && role !== 'gasSystem' && role !== 'habitableMoonSystem') continue;
+      const id = typeof g.id === 'number' && Number.isFinite(g.id) ? Math.round(g.id) : ok.length + 1;
+      const members = Array.isArray(g.members)
+        ? (g.members as unknown[]).filter((m): m is number => typeof m === 'number' && Number.isInteger(m) && m >= 0 && m < 8)
+        : [];
+      if (!members.length) continue;
+      ok.push({ id, role, members });
+    }
+    if (ok.length) groups = ok;
+  }
+  if (!planets.length && !moons.length && !groups && !names && !star) return undefined;
+  return { planets, moons, ...(groups ? { groups } : {}), ...(names ? { bodyNames: names } : {}), ...(star ? { star } : {}) } as unknown as SystemOverrides;
+}
 /** 世界名:去掉控制字符、首尾空白,超长截断(max 个字,默认 TITLE_MAX);空 = 没起名 */
 export function cleanTitle(raw: unknown, max: number = TITLE_MAX): string {
   if (typeof raw !== 'string') return '';
@@ -615,9 +917,16 @@ export function makeSave(
   savedAt = new Date().toISOString(),
   view?: SaveView | null,
   origin?: SaveOrigin | null,
+  system?: SystemOverrides | null,
+  bodiesIn?: readonly SaveBody[],
 ): SaveFile {
   const p = {} as WorldParams;
   for (const k of PARAM_KEYS) p[k] = params[k] ?? DEFAULT_PARAMS[k];
+  // 后来加的可选参数:只有给了才写(不给 = 存档里连字段都没有,老版本照旧读)
+  for (const k of EXTRA_KEYS) {
+    const v = params[k];
+    if (v !== undefined) p[k] = v;
+  }
   const save: SaveFile = {
     app: SAVE_APP,
     format: SAVE_FORMAT_YEARS,
@@ -631,6 +940,7 @@ export function makeSave(
     },
     check,
     savedAt,
+    ...(cleanBodies(bodiesIn) ? { bodies: cleanBodies(bodiesIn) } : {}),
   };
   // AI 起的名字:只存现在还用着的
   const ai = aiNameKeys(edits);
@@ -695,6 +1005,13 @@ export function makeSave(
   if (v) save.view = v;
   const o = origin ? cleanOrigin(origin) : null;
   if (o) save.origin = o;
+  const sys = cleanSystem(system);
+  if (sys) {
+    save.system = sys;
+    // 同一份覆盖表再写一份分层形态(行星 → 卫星);默认世界没有 system,所以两样都不写
+    save.systemSpec = layersOfOverrides(sys);
+  }
+  setCurrentSystem(sys ?? null);
   save.format = saveFormatOf(save.edits);
   return save;
 }
@@ -781,6 +1098,18 @@ export function parseSave(text: string): ParseResult {
     params[k] = Math.min(hi, Math.max(lo, v));
   }
   if (bad.length) warnings.push(`存档里的${bad.join('、')}不对,已改成合理的值`);
+  // 后来加的可选参数:给了才读;越界改成范围内的值,不是数字就当没给
+  for (const k of EXTRA_KEYS) {
+    const v = P[k];
+    if (v === undefined) continue;
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      bad.push(EXTRA_PARAM_NAME[k]);
+      continue;
+    }
+    const [lo, hi] = EXTRA_PARAM_RANGE[k];
+    if (v < lo || v > hi) bad.push(EXTRA_PARAM_NAME[k]);
+    params[k] = Math.round(Math.min(hi, Math.max(lo, v)));
+  }
 
   const generator = typeof raw.generator === 'number' && Number.isFinite(raw.generator) ? raw.generator : 0;
   // 版本不同的提示排在参数之后、改名之前;变了什么要看改没改过地形,地形修改读完再算
@@ -1047,6 +1376,17 @@ export function parseSave(text: string): ParseResult {
   const origin = cleanOrigin(raw.origin);
   if (origin) save.origin = origin;
   save.format = saveFormatOf(save.edits);
+  // 星系结构(逐行星/卫星覆盖表):优先读分层形态(systemSpec),读不懂回落到老的 system;都不行就按种子重建
+  const layers = overridesOfLayers(raw.systemSpec);
+  // 步11:每天体的世界/文明(不写 = 只有主天体)
+  const bodies = cleanBodies(raw.bodies);
+  if (bodies) save.bodies = bodies;
+  const sys = cleanSystem(layers ?? raw.system);
+  if (sys) {
+    save.system = sys;
+    save.systemSpec = layersOfOverrides(sys);
+  } else if (raw.system !== undefined || raw.systemSpec !== undefined) warnings.push('星系结构读不懂,按种子重建');
+  setCurrentSystem(sys ?? null);
   // 打开时看哪(分享链接里带的):不合格的那一样去掉,不提示
   const moment = cleanMoment(raw.moment, momentYearMax(save.edits));
   if (moment) save.moment = moment;

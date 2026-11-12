@@ -1,6 +1,21 @@
-node_modules
+﻿node_modules
 dist
 snaps
 *.log
 .DS_Store
 .claude/
+out/
+
+# ==== 本地分支：一次性修补脚本与过程产物（本地保留，不入库）====
+scripts/fix-*.mjs
+scripts/patch-*.mjs
+scripts/add-verify-*.mjs
+scripts/check-*.mjs
+scripts/_tmp.mjs
+scripts/find-brace.mjs
+scripts/plan-next-round.mjs
+scripts/reorganize-todolist.mjs
+scripts/show-stage.mjs
+scripts/update-*.mjs
+docs/backup/
+docs/preview/

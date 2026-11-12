@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界概览的"世界设定"页:这个世界创建时定下的根,都只能看,不能再改(一改几千年的历史就要整个重来)。分两页:
  * 「文明」—— 文明种子、地名风格、推演年数、天灾、规则、拓荒(民族扩散、国家扩张、地形难走程度)、文明起源;想换个样子:"以它为底稿新建…"
  * (回到新建这一步,设定照原样带过去,存成另一个世界);右栏是随时能改的「纪年」(EraSettings.tsx)和「月份」(MonthSettings.tsx;窄屏放在最上面)。
@@ -28,7 +28,8 @@ import { EraSection } from './EraSettings';
 import { MonthSection } from './MonthSettings';
 import { useNarrow } from './device';
 import { ParamField, rangeFill } from './ParamField';
-import { CONT_SLIDERS, SLIDERS, YEARS_NOTE, YEARS_ON, YEARS_SLIDER, YEARS_SWITCH, contDefault, yearsSpan, type SliderLike } from './genesisSliders';
+import { CONT_SLIDERS, SLIDERS, SYSTEM_LEVEL_KEYS, YEARS_NOTE, YEARS_ON, YEARS_SLIDER, YEARS_SWITCH, contDefault, yearsSpan, type SliderLike } from './genesisSliders';
+import { OptionRow } from './ParamField';
 import './ai.css';
 
 // 滑条、推演年数的说法、参数简写在 genesisSliders.ts(新建弹窗也用),这里照旧一起导出
@@ -70,6 +71,18 @@ export function ParamSlider({
   const [v, setV] = useState(value);
   useEffect(() => setV(value), [value]);
   const [err, setErr] = useState<string | null>(null);
+  // 有具体名字的几档:不摆滑条,摆成分段选项
+  if (s.options) {
+    return (
+      <div className="param-slider param-slider-opt" title={s.hint} data-param={s.key}>
+        <span className="param-slider-row">
+          <span>{s.name}</span>
+        </span>
+        <OptionRow s={s} value={value} onCommit={onCommit} disabled={disabled} />
+      </div>
+    );
+  }
+
   return (
     <div className="param-slider" title={s.hint} data-param={s.key}>
       <span className="param-slider-row">
@@ -236,7 +249,7 @@ export function SettingsPage(p: SettingsProps) {
                   <span>大陆数量</span>
                   <b>{params.continents ? `${params.continents} 块` : '自动'}</b>
                 </div>
-                {CONT_SLIDERS.map((s) => (
+                {CONT_SLIDERS.filter((s) => !SYSTEM_LEVEL_KEYS.includes(s.key as (typeof SYSTEM_LEVEL_KEYS)[number])).map((s) => (
                   <div key={s.key} className="ov-kv-row" data-param={s.key}>
                     <span>{s.name}</span>
                     <b>{s.fmt(params[s.key])}</b>

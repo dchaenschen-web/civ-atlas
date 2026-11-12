@@ -1,4 +1,5 @@
-import './theme.css';
+﻿import './theme.css';
+import { systemOpt } from '../gen/systemState';
 import { Component, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { endLoadWatch, reportOpenCrash } from './openGuard';
 import { createPortal, flushSync } from 'react-dom';
@@ -1432,7 +1433,7 @@ function AppBody({ fromHome }: { fromHome?: HomeStart }) {
     prepareCivReplay(); // 文明层先退回第 0 年,等地质放完再接着放文明
     setReplayOn(true);
     if (replay) setReplay({ ...replay, idx: 0 });
-    else send({ type: 'history', id: reqId.current, params: genParams.current, terrain: [...genTerrain.current], sketch: genSketch.current });
+    else send({ type: 'history', id: reqId.current, params: genParams.current, terrain: [...genTerrain.current], sketch: genSketch.current, ...systemOpt() });
   };
   /** 弯边投影:回放帧先放在离屏的等距圆柱原图上,再按投影铺到屏幕上 */
   const overlayProj = useRef(new ProjLayer());

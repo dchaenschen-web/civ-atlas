@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 事件种类、史事种类改成登记:引擎按登记的种类定"核对版本号""同一刻里排在哪",自己不认识任何子系统的事件;
  * 官方推演的事件种类在 civ/events.ts(CIV_EVENTS),史事种类的说明在 civ/annals.ts(ANNAL_KINDS)。
  */
@@ -80,10 +80,10 @@ describe('引擎按登记的事件种类排同一刻的先后', () => {
 });
 
 describe('官方推演登记的种类', () => {
-  it('事件:编号不重复,都有名字;49 种全登记了', () => {
+  it('事件:编号不重复,都有名字;51 种全登记了', () => {
     const ids = CIV_EVENTS.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
-    expect(ids.length).toBe(49);
+    expect(ids.length).toBe(51);
     for (const e of CIV_EVENTS) expect(e.name.length).toBeGreaterThan(0);
     expect(() => new CivSim(1, CIV_EVENTS)).not.toThrow();
   });

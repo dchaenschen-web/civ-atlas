@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 同一个种子在任何电脑上都生成逐位一致的世界:
  * 地形、文明的**全部数据**(每个类型化数组逐字节、每个小数按 64 位原样,名字也算)按字段各算一个指纹,钉住。
  * CI(x64 Linux)和本地(Apple 芯片 macOS)都要过 —— 推演里 Math.pow / exp / log 算出来、之后要比较或存下来的量
@@ -11,6 +11,9 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PARAMS, generateWorld } from '../src/gen/world';
 import { generateCiv } from '../src/gen/civ';
+
+/** 星球系/地质那一版新加的参数键(对账时去掉) */
+const NEW_PARAM_KEYS = ['astro', 'system', 'planets', 'gas', 'moons', 'tilt', 'rotation', 'geo', 'mag', 'tech', 'arch', 'life', 'home', 'salt', 'impact'];
 
 const f64 = new Float64Array(1);
 const f64b = new Uint8Array(f64.buffer);
@@ -52,7 +55,16 @@ function fingerprint(seed: number): Record<string, string> {
   const w = generateWorld({ ...DEFAULT_PARAMS, cells: 12000, seed });
   const civ = generateCiv(w);
   const out: Record<string, string> = {};
-  for (const k of Object.keys(w).sort()) out[`world.${k}`] = print((w as unknown as Record<string, unknown>)[k]);
+  for (const k of Object.keys(w).sort()) {
+    // 星球系/地质那一版给 WorldParams 加了新键、给 climate 加了 mods(派生字段):地形、气候、文明的数据一个没变,
+    // 所以对账时去掉,金标照旧——这正好是"新参数没有改动任何数"的证明
+    let v = (w as unknown as Record<string, unknown>)[k];
+    if (k === 'params') {
+      v = { ...(v as Record<string, unknown>) };
+      for (const nk of NEW_PARAM_KEYS) delete (v as Record<string, unknown>)[nk];
+    }
+    out[`world.${k}`] = print(v);
+  }
   for (const k of Object.keys(civ).sort()) {
     // 地图上画的关隘(Place.kind = 'pass')是后加的:别的地名单算一份(加关隘时它一个字没变),关隘另算一份
     if (k === 'places') {

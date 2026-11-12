@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 存档的浏览器存储:"我的世界"。
  *
  * - 一个世界一个编号(newWorldId,网址里的 w=):同一个种子 + 参数可以存好几个,各走各的历史。
@@ -52,6 +52,7 @@ import {
   type SaveOrigin,
   type SaveView,
 } from '../gen/savefile';
+import { currentSystem } from '../gen/systemState';
 import type { RosterMarks } from '../worldRoster';
 import { getEdits, subscribeEdits } from './editsStore';
 import { createListeners } from './createStore';
@@ -869,7 +870,7 @@ export function saveAsNewVersion(id: string, edits: WorldEdits, want?: string): 
   const taken = new Set(listWorlds().map((x) => x.save.title ?? ''));
   const title = cleanTitle(want) || (taken.has(first) ? nextTitle(first) : first);
   // 地形校验留空:新版生成出来的地形可能不一样,打开后按生成出来的记上(不提示"对不上")
-  const save = makeSave(w.save.params, edits, '', title, undefined, w.save.view, w.save.origin);
+  const save = makeSave(w.save.params, edits, '', title, undefined, w.save.view, w.save.origin, currentSystem());
   const nid = newWorldId();
   if (!writeSave(nid, save, { alive: w.alive })) return null;
   changed();
@@ -894,7 +895,7 @@ export function newHistoryWorld(id: string, o: Omit<NewHistoryOptions, 'from'> &
   const title = cleanTitle(want) || nextTitle(w.save.title || '未命名世界');
   // 地形校验:同一张地图照抄;旧版本建的留空,打开后按生成出来的记上
   const check = w.save.generator === GENERATOR_VERSION ? w.save.check : '';
-  const save = makeSave(w.save.params, edits, check, title, undefined, w.save.view, w.save.origin);
+  const save = makeSave(w.save.params, edits, check, title, undefined, w.save.view, w.save.origin, currentSystem());
   const nid = newWorldId();
   if (!writeSave(nid, save, { opened: save.savedAt })) return null;
   changed();
@@ -914,7 +915,7 @@ export function saveCurrentAs(edits: WorldEdits, title: string, from?: string): 
     return null;
   }
   // 照原样打开的旧世界另存出来的:按现在的版本打开、推演(地形校验留空,打开后按生成出来的记上)
-  const save = makeSave(c.params, edits, c.frozen !== undefined ? '' : c.check, cleanTitle(title) || undefined, undefined, currentView(), c.origin);
+  const save = makeSave(c.params, edits, c.frozen !== undefined ? '' : c.check, cleanTitle(title) || undefined, undefined, currentView(), c.origin, currentSystem());
   const nid = newWorldId();
   if (!writeSave(nid, save, { opened: save.savedAt, ...(from && isStored(from) ? { from } : {}) })) return null;
   changed();
@@ -940,7 +941,7 @@ export function overwriteWorld(id: string, edits: WorldEdits): boolean {
   if (!w || w.draft || w.map) return false;
   // 地形校验:旧版本建的留空(这一份记现在的版本,打开后按生成出来的记上)
   const check = w.save.generator === GENERATOR_VERSION ? w.save.check : '';
-  const save = makeSave(w.save.params, edits, check, w.save.title, undefined, w.save.view, w.save.origin);
+  const save = makeSave(w.save.params, edits, check, w.save.title, undefined, w.save.view, w.save.origin, currentSystem());
   // 结束那一年现存几国、缩略图都是原来那段历史的:去掉,打开时重新数、重截
   const meta: Meta = { ...readMeta(id), opened: save.savedAt };
   delete meta.alive;
@@ -1050,7 +1051,7 @@ let current: Current | null = null;
 
 /** 当前世界的存档:照原样打开的旧世界、只有配方的旧世界照旧记建它的那一版 */
 function saveOf(c: Current, edits: WorldEdits, view: SaveView | null | undefined): SaveFile {
-  const save = makeSave(c.params, edits, c.oldRecipe?.check ?? c.check, c.title, undefined, view, c.origin);
+  const save = makeSave(c.params, edits, c.oldRecipe?.check ?? c.check, c.title, undefined, view, c.origin, currentSystem());
   if (c.frozen !== undefined) save.generator = c.frozen;
   else if (c.oldRecipe) save.generator = c.oldRecipe.generator;
   return save;
@@ -1440,7 +1441,7 @@ export function saveCurrentAsMap(): boolean {
   const e = getEdits();
   const edits: WorldEdits = { names: {}, interventions: [], terrain: e.terrain, ...(e.sketch ? { sketch: e.sketch } : {}) };
   // 出处跟着(照作品墙上的新建参数作品新建的:地图出自那套参数)
-  const save = makeSave(c.params, edits, c.check, undefined, undefined, currentView(), c.origin);
+  const save = makeSave(c.params, edits, c.check, undefined, undefined, currentView(), c.origin, currentSystem());
   const prev = store().get(PREFIX + c.id);
   if (!writeSave(c.id, save, { map: true, opened: save.savedAt })) {
     // 存档换成了只有地图的、本地信息却没写上:放回原来那份(还是没建完的,名字、文明的设定都在)

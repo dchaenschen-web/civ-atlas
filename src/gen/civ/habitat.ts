@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 宜居度(地块级):哪里适合住人。
  *
  * 量级沿用 Azgaar(群落底分 + 淡水 + 海岸 / 良港 − 海拔),换成我们模拟出来的真实物理量:
@@ -21,6 +21,7 @@ import type { World } from '../world';
 import type { Habitat } from './types';
 import { KM_PER_UNIT, adjLengths, cellAreas, refCellArea } from './geo';
 import { flog2 } from './engine/rand';
+import { astroOf } from '../astro';
 
 /** 群落宜居底分(按 Biome 编号;见地貌表的 habitability) */
 export const BIOME_HABITABILITY = biomeColumn('habitability');
@@ -83,6 +84,10 @@ export function computeHabitat(world: World): Habitat {
   const capacity = new Float32Array(n);
   const harbor = new Uint8Array(n);
   const coastDist = new Int8Array(n);
+  // 潮差对海岸的加成(星球系):地球基线 = 0;大潮差的海岸渔业与造船好,几乎没有潮汐的星海岸差一点。
+  // 没有星球系(astro = 0)= 0,世界和加这一层以前逐字节一样
+  const sys = astroOf(world);
+  const tideBonus = sys ? Math.max(-2, Math.min(6, (sys.home.tide - 1) * 3)) : 0;
 
   // ---- 离海岸距离:从海岸线两侧同时做 BFS(湖泊算"陆地一侧") ----
   const queue = new Int32Array(n);
@@ -150,6 +155,7 @@ export function computeHabitat(world: World): Habitat {
       s += COAST;
       if (river >= 1) s += ESTUARY;
       if (seaN === 1) s += HARBOR;
+      if (tideBonus !== 0) s += tideBonus;
     }
     s -= Math.max(0, elevation[i]) / ELEV_PER_POINT;
     s -= Math.min(SLOPE_MAX, SLOPE_K * slope);

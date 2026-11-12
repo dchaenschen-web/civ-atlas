@@ -39,6 +39,7 @@ import {
   type SaveFile,
   type SaveOrigin,
 } from '../src/gen/savefile';
+import type { SystemOverrides } from '../src/gen/astroDesign';
 import { BUNDLE_FORMAT, bundleFileName, bundleText, importBundle, openBundleText, parseBundle } from '../src/ui/bundle';
 import { forgetNotes } from '../src/ai/library';
 import * as saveStore from '../src/ui/saveStore';
@@ -2199,5 +2200,35 @@ describe('全部存成文件(bundle)', () => {
 
   it('一个世界都没有:没有可存的', () => {
     expect(bundleText()).toBeNull();
+  });
+});
+
+describe('星系结构(覆盖表)进存档', () => {
+  const sys: SystemOverrides = {
+    planets: [
+      { index: 0, a: 0.8, ecc: 0.03, incDeg: 2.5, nodeDeg: 90, radius: 1.1, tilt: 30, rotation: 20, life: 1 },
+      { index: 2, home: true, terrain: [{ kind: 'volcano', pts: [812, 403], r: 28, s: 1.05 }] },
+    ],
+    moons: [{ planet: 0, moon: 0, distance: 50, radius: 0.4, locked: true }],
+  };
+  it('存档带上覆盖表,读回来一位不差', () => {
+    const save = makeSave({ ...DEFAULT_PARAMS, seed: 9 }, EMPTY_EDITS, 'c', '星系', undefined, null, null, sys);
+    const r = parseSave(saveText(save));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.save.system).toEqual(sys);
+  });
+  it('没有覆盖表时不写 system(默认世界逐字节不变)', () => {
+    const raw = JSON.parse(saveText(makeSave({ ...DEFAULT_PARAMS, seed: 9 }, EMPTY_EDITS, 'c'))) as Record<string, unknown>;
+    expect('system' in raw).toBe(false);
+  });
+  it('覆盖表里的坏值被丢掉/夹回范围,读不懂的不挡打开', () => {
+    const raw = JSON.parse(saveText(makeSave({ ...DEFAULT_PARAMS, seed: 9 }, EMPTY_EDITS, 'c'))) as Record<string, unknown>;
+    raw.system = { planets: [{ index: 0, a: 9999, tilt: 40 }, { index: 'x' }], moons: [{ planet: 0 }] };
+    const r = parseSave(JSON.stringify(raw));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.save.system?.planets).toEqual([{ index: 0, tilt: 40 }]);
+    expect(r.save.system?.moons).toEqual([]);
   });
 });

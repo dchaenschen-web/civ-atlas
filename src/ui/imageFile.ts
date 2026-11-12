@@ -5,10 +5,11 @@
 import { preparePicture, type Picture } from '../gen/sketchImage';
 import { showToast } from './toastStore';
 
-/** 原图宽或高超过这么多就不认了(太大的图解码很占内存) */
-const MAX_SIDE = 8000;
+/** S4 原图约束：最长边不超过 1024，单张不超过 1.5 MB。 */
+export const MAX_SIDE = 1024;
+export const MAX_IMAGE_BYTES = 1_500_000;
 /** 认之前先把图缩到长边不超过这么多(找线还用得上细节,又不至于太慢) */
-const DECODE_SIDE = 2560;
+const DECODE_SIDE = 1024;
 
 /** 拖进来的是不是图片 */
 export const isImageFile = (f: File) => f.type.startsWith('image/');

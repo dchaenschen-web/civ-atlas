@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 世界概览(点世界名、侧栏里的"全部 N 国""编年史""世界参数"打开):全屏浮层。
  *
  *   头部  世界名;一行"种子 7，当前 2679 年，未干预"(设了纪年:"当前公元前 850 年");一行汇总(现存几国、历来几国、民族、城镇、州,跟着时间轴的当前年份);
@@ -32,8 +32,13 @@ import { OutlinePage, OutlinePhone, useOutlinePickReturn } from './OutlinePage';
 import { closeEdit, getOutlineUi } from './outlineStore';
 import { interventionRows } from './outlineInfo';
 import { SettingsPage } from './WorldOverviewGenesis';
+import { SystemPage } from './SystemPage';
+import { SkyGeoPage } from './SkyGeoPage';
+import { TechPage } from './TechPage';
 import { getCivTime, subscribeCivTime } from './civView';
-import { useEdits, useEra } from './editsStore';
+import { commitEdits, getEdits, useEdits, useEra } from './editsStore';
+import { cratersToOps, type ImpactCrater } from '../gen/impacts';
+import { TERRAIN_MAX_OPS } from '../gen/terrainOps';
 import { spaced, yearAt } from '../gen/era';
 import { cleanCivSeed } from '../gen/edits';
 import { currentWorld, renameWorld, useSavesVersion } from './saveStore';
@@ -73,6 +78,9 @@ const TABS: { id: OverviewTab; name: string }[] = [
   { id: 'marks', name: '标记' },
   { id: 'outline', name: '大纲' },
   { id: 'interventions', name: '我的干预' },
+  { id: 'system', name: '星球系' },
+  { id: 'sky', name: '天象与地质' },
+  { id: 'tech', name: '技术路线' },
   { id: 'genesis', name: '世界设定' },
 ];
 
@@ -198,6 +206,15 @@ function Cultures({ civ }: { civ: Civ | null }) {
   return <CulturesPage civ={civ} year={year} />;
 }
 
+/** 把陨击结算的坑写成地形修改:和地形编辑同一种改动,存进存档、重新生成世界(推演跟着重来) */
+function applyCraters(craters: ImpactCrater[]): void {
+  const ops = cratersToOps(craters);
+  if (!ops.length) return;
+  const cur = getEdits();
+  const terrain = [...cur.terrain, ...ops].slice(-TERRAIN_MAX_OPS);
+  commitEdits({ ...cur, terrain });
+}
+
 function OverviewPage(p: WorldOverviewProps & { tab: OverviewTab }) {
   switch (p.tab) {
     case 'countries':
@@ -205,7 +222,7 @@ function OverviewPage(p: WorldOverviewProps & { tab: OverviewTab }) {
     case 'cultures':
       return <Cultures civ={p.civ} />;
     case 'chronicle':
-      return <Chronicle civ={p.civ} />;
+      return <Chronicle civ={p.civ} world={p.data?.world ?? p.baseWorld ?? null} />;
     case 'people':
       return <PeoplePage civ={p.civ} data={p.data} />;
     case 'records':
@@ -216,6 +233,12 @@ function OverviewPage(p: WorldOverviewProps & { tab: OverviewTab }) {
       return <OutlinePage civ={p.civ} />;
     case 'interventions':
       return <InterventionsPage civ={p.civ} world={p.data?.world ?? null} busy={p.resimBusy} />;
+    case 'sky':
+      return <SkyGeoPage world={p.data?.world ?? p.baseWorld ?? null} civ={p.civ} onApplyCraters={applyCraters} />;
+    case 'system':
+      return <SystemPage world={p.data?.world ?? p.baseWorld ?? null} civ={p.civ} onApplyCraters={applyCraters} />;
+    case 'tech':
+      return <TechPage world={p.data?.world ?? p.baseWorld ?? null} />;
     case 'genesis':
       return (
         <SettingsPage

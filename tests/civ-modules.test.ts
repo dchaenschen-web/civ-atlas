@@ -37,6 +37,8 @@ describe('官方推演的子系统清单', () => {
       'migration',
       'religion',
       'interventions',
+      'geoEvents',
+      'impactEvents',
     ]);
   });
 

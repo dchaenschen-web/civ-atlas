@@ -376,6 +376,9 @@ export function computeClimate(
   p: ClimateParams,
   currents?: Currents,
   seasons = false,
+  // 星球系派生出来的修正(astro = 0 时不传):辐照 + 温室的气温差、倾角带来的极地增温、自转与气压带来的降水倍率。
+  // 不进 ClimateParams、也不进 World.climate:那是要存进世界文件、要过校验的东西,只认数
+  mods: import('./astro').ClimateMods | null = null,
 ): Climate {
   const { n } = mesh;
   const geo = geometryOf(mesh);
@@ -387,6 +390,19 @@ export function computeClimate(
     const e = water[i] === 1 ? 0 : Math.max(0, elev[i]);
     temperature[i] = base.seaTemp[i] + p.temperature - 0.0065 * e + 1.5 * base.tNoise[i];
     if (currents && water[i] === 1) temperature[i] += currents.sst[i];
+    // 星球系:辐照 + 温室带来的整体温差;倾角大时极地增温(地球基线时两项都恰好是 0 / 不执行)
+    if (mods) {
+      temperature[i] += mods.tempOffset;
+      if (mods.polarWarm !== 0) {
+        const c = round24(Math.cos(round24(geo.latitude(i) * (Math.PI / 180))));
+        temperature[i] += mods.polarWarm * (1 - c) * 9;
+      }
+      // 自转慢(或潮汐锁定):向阳经度热、背阴经度冷,形成一个固定的昼夜温差场
+      if (mods.diurnalK !== 0) {
+        const lonDeg = round24((mesh.x[i] / mesh.width) * 360 - 180);
+        temperature[i] += mods.diurnalK * round24(Math.cos(round24(lonDeg * (Math.PI / 180))));
+      }
+    }
   }
 
   // 贴岸的陆地沾附近海面的冷暖(不管风向):附近海面偏差的平均 + 附近有多少是海
@@ -446,5 +462,7 @@ export function computeClimate(
   }
 
   if (sst) for (let i = 0; i < n; i++) temperature[i] += year.landHeat[i];
+  // 星球系:降水倍率(自转快慢、表面气压)。地球基线时恰好是 1,不乘
+  if (mods && mods.rainScale !== 1) for (let i = 0; i < n; i++) precipitation[i] *= mods.rainScale;
   return { temperature, precipitation, windX: annual.windX.slice(), windY: annual.windY.slice() };
 }
