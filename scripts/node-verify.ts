@@ -1353,7 +1353,7 @@ async function assetPackChecks(): Promise<void> {
   const planet = read('src/render/planet.ts');
   ok('步9:晨昏线走球面着色器(u_sunLon)', planet.includes('uniform float u_sunLon, u_sunLat;') && planet.includes('u_sunLon - u_lon'));
   ok('步9:Studio 按太阳直射经度算 sun 向量', studio.includes('const sunLonForGlobe =') && studio.includes('skyLayerOf(sysAstro.design, sysYear, sysSelected)'));
-  ok('步9:SystemGlobe 支持双击打开(onOpen)', globe.includes('onOpen?: (index: number, at?: { x: number; y: number; r: number }) => void;') && globe.includes('onOpen(best, { x, y, r: 18 })'));
+  ok('步9:SystemGlobe 支持双击打开(onOpen)', globe.includes('onOpen?: (index: number, at?: { x: number; y: number; r: number }) => void;') && globe.includes('onOpen(openIdx, { x, y, r: 18 })'));
   {
     const a = studio.indexOf('onFocusDone={() => {');
     const b = a >= 0 ? studio.indexOf('}}', a) : -1;
@@ -1374,7 +1374,7 @@ async function assetPackChecks(): Promise<void> {
   ok('步9:天球背景画附近恒星', globeSky.includes('nearbyStarsOf') && globeSky.includes('data-act="globe-sky"'));
   ok('步9:天球背景画同子星系星体', globeSky.includes('sky.siblings'));
   ok('步9:双击行星有缩放转场', studio.includes('data-act="globe-zoom"') && studio.includes('@keyframes globeZoom'));
-  ok('步9:SystemGlobe 双击回传点击坐标', read('src/ui/SystemGlobe.tsx').includes('onOpen(best, { x, y, r: 18 })'));
+  ok('步9:SystemGlobe 双击回传点击坐标', read('src/ui/SystemGlobe.tsx').includes('onOpen(openIdx, { x, y, r: 18 })'));
 }
 // ---- 57. 星环(按质量) ----
 {
@@ -1601,7 +1601,7 @@ async function assetPackChecks(): Promise<void> {
   ok('U1:贴图上传到 GPU(按 key 缓存)', gl3.includes('texCache') && gl3.includes('gl.texImage2D'));
   ok('U1:画球时用深度测试 + 恒星方向光照', gl3.includes('normalize(-v_world)') && gl3.includes('gl.drawElements(gl.TRIANGLES'));
   ok('U1:星图把行星喂给 GPU(真实尺度半径)', globe.includes('r.setBodies(list)') && globe.includes('p.radius * (6371 / 1.496e8) * scene.scale'));
-  ok('U1:有 GPU 球体后不再画 2D 圆', globe.includes('if (!gpu) ctx.fillStyle = planetColor(p);'));
+  ok('U1:GPU 球体后不画 2D 圆(伴星例外)', globe.includes('if (!gpu || isCompanion) ctx.fillStyle = planetColor(p);'));
 }
 // ---- 70. U1 续:伴星/卫星进 3D ----
 {
@@ -1634,7 +1634,7 @@ async function assetPackChecks(): Promise<void> {
   const studio = read('src/ui/studio/Studio.tsx');
   ok('轨道UI:星系树显示 a/周期(读 BodyView)', tree.includes("viewOf('p' + index)") && tree.includes('v.orbit.periodDays'));
   ok('轨道UI:行星面板周期读 BodyView', editor.includes("bodyViewOf(sys, 'p' + selPlanet.index)?.orbit.periodDays"));
-  ok('U3:推进视距按行星视半径算(占 55% 短边)', globe.includes('const focal = (size.h / 2) / Math.tan((55 * Math.PI) / 360)') && globe.includes('0.55 * Math.min(size.w, size.h)'));
+  ok('U3:推进视距按目标视半径算(32%)', globe.includes('0.32 * Math.min(size.w, size.h)'));
   ok('U3:贴近行星后滚轮允许更近(1e-5)', globe.includes('c.at ? 1e-5 : 5'));
   ok('U3:推到位后相机停在行星旁并跟随', globe.includes('dist: (() => {') && globe.includes('setFollowIdx(focusIndex)'));
 }
@@ -1666,12 +1666,28 @@ async function assetPackChecks(): Promise<void> {
   const studio = read('src/ui/studio/Studio.tsx');
   const globe = read('src/ui/SystemGlobe.tsx');
   const css = read('src/ui/studio/studio.css');
-  ok('星系左栏:树+数据面板且不挡时间轴', studio.includes('width: 600') && studio.includes('bottom: 104'));
+  ok('星系左栏:两栏不挡时间轴', studio.includes('width: 270') && studio.includes('width: 470') && studio.includes('bottom: 104'));
   ok('星系左栏:暗色主题类', studio.includes('galaxy-dark') && css.includes('.galaxy-dark'));
-  ok('卫星:门控依赖 cam.dist/followIdx', globe.includes('showMoons, followIdx, cam.dist]') && globe.includes('const subSystemView = followIdx !== null || cam.dist < 3;'));
+  ok('卫星:门控依赖含贴图版本', globe.includes('selected, moonTex, texVersion]') && globe.includes('cam.dist < 8 || selected >= 0'));
   ok('卫星:可见半径下限', globe.includes('* 0.08'));
   ok('双固态:互绕间距有可见下限', globe.includes('const sepScene = Math.max(bin.separationAU * scene.scale'));
   ok('双固态:伴星基准位置与主行星同年份', globe.includes('const homeSt = year === undefined ? null : positionAtAU'));
+}
+// ---- 76. 分离双星 / 卫星可见 / 星系两栏 ----
+{
+  const read = (p: string) => readFileSync(resolve(process.cwd(), p), 'utf8');
+  const gl3 = read('src/render/systemGlobe3d.ts');
+  const globe = read('src/ui/SystemGlobe.tsx');
+  const editor = read('src/ui/SystemEditor.tsx');
+  const studio = read('src/ui/studio/Studio.tsx');
+  const css = read('src/ui/studio/studio.css');
+  ok('分离双星:轨道环以主星为中心', gl3.includes("const wide = !!(design.binaryStar && design.binaryStar.tier !== 'close'") && gl3.includes('(prev[0] + ox) * scale'));
+  ok('分离双星:行星位置加主星偏移', globe.includes('orbitOff: [number, number, number] = design.binaryStar') && globe.includes('(pos[0] + orbitOff[0]) * scene.scale'));
+  ok('双固态伴星:屏幕间距下限 14px', globe.includes('(14 * Math.max(1e-6, cam.dist)) / focalBodies'));
+  ok('卫星:屏幕间距/半径下限(AU 单位 + 半径夹紧)', globe.includes('sepMinAU = (26 * Math.max(1e-6, cam.dist)) / focalBodies / scene.scale') && globe.includes('radius: Math.min(0.02'));
+  ok('星系两栏:左树右参数', studio.includes('data-act="galaxy-left"') && studio.includes('data-act="galaxy-right"') && editor.includes("part?: 'all' | 'tree' | 'props';"));
+  ok('星系两栏:树栏占满高度/空白区更大', read('src/ui/SystemTree.tsx').includes("minHeight: '100%'") && read('src/ui/SystemTree.tsx').includes('flex: 1, minHeight: 160'));
+  ok('星系两栏:暗色背景框', css.includes('.galaxy-dark div[style*="255,255,255"]'));
 }
 assetPackChecks().then(
   () => process.exit(fails === 0 ? 0 : 1),

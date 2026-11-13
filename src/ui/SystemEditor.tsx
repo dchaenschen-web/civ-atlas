@@ -42,6 +42,11 @@ export interface SystemEditorProps {
   onClose: () => void;
   /** 右栏小星系图:星系模式中间已有 3D 星图,传 false 隐藏 */
   miniGlobe?: boolean;
+  /** 只渲染一部分:'tree' = 只渲染星系树栏;'props' = 只渲染天体参数栏(树栏隐藏) */
+  part?: 'all' | 'tree' | 'props';
+  /** 受控选中(树与参数栏分开渲染时用来同步) */
+  sel?: TreeSel;
+  onSel?: (s: TreeSel) => void;
 }
 
 const RING: Record<string, string> = { f: '白黄矮星', g: '黄矮星', k: '橙矮星', m: '红矮星', bin: '双星' };
@@ -134,7 +139,7 @@ export function resolveBinaryTier(p: { binaryTier?: number }, d: { binaryStar?: 
   return t === 'triple' ? 2 : t === 'wide' ? 1 : 0;
 }
 
-export function SystemEditor({ params, overrides, onChange, onParams, onClose, focus, miniGlobe }: SystemEditorProps) {
+export function SystemEditor({ params, overrides, onChange, onParams, onClose, focus, miniGlobe, part, sel: selProp, onSel: onSelProp }: SystemEditorProps) {
   const sys = useMemo(() => generateAstro(params, overrides), [params, overrides]);
   // 星体名:种子生成 + 手动改名(存在覆盖表的 bodyNames 里)
   const names = useMemo(() => namedBodies(sys, params.seed, overrides), [sys, params.seed, overrides]);
@@ -157,7 +162,10 @@ export function SystemEditor({ params, overrides, onChange, onParams, onClose, f
   const moonSurfaceOf = (planet: number, moon: number) => overrides.moons.find((x) => x.planet === planet && x.moon === moon)?.surface;
   const changed = overrides.planets.length + overrides.moons.length;
   /** 左树选中:star / planet i / moon p:m */
-  const [sel, setSel] = useState<TreeSel>(focus ? (focus.kind === 'moon' ? { kind: 'moon', p: focus.planet ?? 0, m: focus.moon ?? 0 } : { kind: 'planet', i: focus.planet ?? 0 }) : { kind: 'star' });
+  const [selLocal, setSelLocal] = useState<TreeSel>(focus ? (focus.kind === 'moon' ? { kind: 'moon', p: focus.planet ?? 0, m: focus.moon ?? 0 } : { kind: 'planet', i: focus.planet ?? 0 }) : { kind: 'star' });
+  const sel = selProp ?? selLocal;
+  const setSel = (s: TreeSel) => { setSelLocal(s); onSelProp?.(s); };
+  useEffect(() => { if (selProp) setSelLocal(selProp); }, [selProp]);
   /** 改星体名:写进覆盖表的 bodyNames(空名字 = 恢复按种子生成的名字) */
   const setBodyName = (patch: { star?: string; planet?: [number, string]; moon?: [number, number, string] }) => {
     const cur = overrides.bodyNames ?? {};
@@ -360,12 +368,33 @@ export function SystemEditor({ params, overrides, onChange, onParams, onClose, f
     setTplNote(`已套用「${t.surface.label}」· 卫星 · 陆地 ${Math.round((r.surface.landFraction ?? 0.5) * 100)}% · 气温 ${r.surface.temperature ?? 0}°C · ${r.surface.cells ?? 0} 地块`);
   };
 
+  if (part === 'tree') {
+    return (
+      <div data-act="system-tree-only" style={{ height: '100%', overflow: 'auto' }}>
+        <SystemTree
+          spec={spec}
+          names={{ star: names.star, planets: names.planets, moons: names.moons }}
+          params={params}
+          overrides={overrides}
+          sel={sel}
+          onSel={setSel}
+          onChange={onChange}
+          onParams={onParams}
+          onRename={(node) => setSel(node)}
+          onTerrain={(i) => setTerrainFor(i)}
+          onSurface={(i) => setSurfaceFor(i)}
+          onReroll={(i) => onChange(setPlanet(overrides, i, { reroll: ((overrides.planets.find((x) => x.index === i)?.reroll ?? 0) % 999) + 1 }))}
+          sys={sys}
+        />
+      </div>
+    );
+  }
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(20,24,32,0.45)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
+    <div data-part={part} style={part === 'props' ? { position: 'relative', zIndex: 0 } : { position: 'fixed', inset: 0, background: 'rgba(20,24,32,0.45)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <div
-        data-act="system-editor"
-        data-theme="light"
-        style={{ width: 'min(1500px, 96vw)', height: '92vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: 16, borderRadius: 12, background: '#fbf9f4', color: '#1d1d1f', colorScheme: 'light', boxShadow: '0 18px 50px rgba(0,0,0,0.35)' }}
+          data-act="system-editor"
+          data-theme={part === 'props' ? undefined : 'light'}
+          style={part === 'props' ? { width: '100%', minHeight: '100%', display: 'flex', flexDirection: 'column', padding: 8, color: '#dbe6f7' } : { width: 'min(1500px, 96vw)', height: '92vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', padding: 16, borderRadius: 14, background: '#f6f6f8', color: '#1c1c22' }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* 选手绘图用的文件框(点「照图」时触发) */}
@@ -381,7 +410,7 @@ export function SystemEditor({ params, overrides, onChange, onParams, onClose, f
             void onPickSketch(f);
           }}
         />
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ ...(part === 'props' ? { display: 'none' } : {}), display: part === 'props' ? 'none' : 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
           <b style={{ fontSize: 15 }}>星系与天体</b>
           <span style={{ fontSize: 12, opacity: 0.65, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
             <input
@@ -410,7 +439,7 @@ export function SystemEditor({ params, overrides, onChange, onParams, onClose, f
 
         {/* 手绘图的反馈 + 资产包(导出 .world 时并排给出,不和存档格式抢) */}
         {(sketchNote || true) && (
-          <div data-act="sketch-note" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 11.5 }}>
+          <div data-act="sketch-note" style={{ display: part === 'props' ? 'none' : 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 11.5 }}>
             <span style={{ color: sketchNote.includes('不能') || sketchNote.includes('失败') ? '#c07070' : '#2f7a4a' }}>{sketchNote}</span>
             {sketchHyd > 0 && <span style={{ opacity: 0.6 }}>已从本机读回 {sketchHyd} 张手绘图</span>}
             <span style={{ opacity: 0.55 }}>手绘图最长边 ≤1024 · 单张 ≤{(SKETCH_ASSET_MAX_BYTES / 1_000_000).toFixed(1)} MB · 每世界 ≤8 MB,存在本机 IndexedDB</span>
@@ -460,7 +489,7 @@ export function SystemEditor({ params, overrides, onChange, onParams, onClose, f
         )}
         {/* 树页:左树(星系→行星→卫星)+ 右属性 */}
         <div style={{ display: 'flex', gap: 12, flex: 1, minHeight: 0, marginTop: 8 }}>
-          <div data-act="system-tree" style={{ flex: '0 0 250px', overflow: 'auto', borderRight: '1px solid rgba(60,60,67,0.12)', paddingRight: 8 }}>
+          <div data-act="system-tree" style={{ ...(part === 'props' ? { display: 'none' } : {}), flex: '0 0 250px', overflow: 'auto', borderRight: '1px solid rgba(60,60,67,0.12)', paddingRight: 8 }}>
             <SystemTree
               spec={spec}
               names={{ star: names.star, planets: names.planets, moons: names.moons }}

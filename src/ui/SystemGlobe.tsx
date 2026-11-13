@@ -19,10 +19,14 @@ export interface SystemGlobeProps {
   belts: readonly BeltDesign[];
   selected: number;
   onSelect: (index: number) => void;
+  /** 选中一颗卫星(行星下标, 卫星下标) */
+  onSelectMoon?: (planet: number, moon: number) => void;
   /** 双击/回车打开这颗行星(Studio:进地球仪) */
   onOpen?: (index: number, at?: { x: number; y: number; r: number }) => void;
   /** 相机推进到这颗行星(推到位后回调 onFocusDone);null = 不动 */
   focusIndex?: number | null;
+  /** 推进到的是这颗卫星(而不是 focusIndex 那颗行星本身) */
+  focusMoon?: { p: number; m: number } | null;
   onFocusDone?: () => void;
   /** 相机拉远回恒星(返回星系视角时用;拉到位回调 onPullDone) */
   pullOut?: boolean;
@@ -31,6 +35,10 @@ export interface SystemGlobeProps {
   startFocusIndex?: number | null;
   /** 行星贴图(US 风格:星图里直接画带贴图的球);没有的用纯色点 */
   bodyTex?: ReadonlyMap<number, HTMLCanvasElement>;
+  /** 卫星贴图(键 `${行星}-${卫星}`) */
+  moonTex?: ReadonlyMap<string, HTMLCanvasElement>;
+  /** 贴图版本号(贴图懒生成完成后变化) */
+  texVersion?: number;
   /** 时间轴年份；未提供时使用静态初相位 */
   year?: number;
   /** 高度:数字(默认 380)或 'fill'(铺满容器,Studio 星系视角用) */
@@ -63,7 +71,7 @@ function planetColor(p: PlanetDesign): string {
   return `rgb(${c.join(',')})`;
 }
 
-export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, focusIndex = null, onFocusDone, pullOut = false, onPullDone, startFocusIndex = null, bodyTex, year, height }: SystemGlobeProps) {
+export function SystemGlobe({ design, names, belts, selected, onSelect, onSelectMoon, onOpen, focusIndex = null, focusMoon = null, onFocusDone, pullOut = false, onPullDone, startFocusIndex = null, bodyTex, moonTex, texVersion, year, height }: SystemGlobeProps) {
   /** 实际高度:数字或铺满(canvas 与容器都用它) */
   const boxH = height === 'fill' ? '100%' : (height ?? H);
   const wrap = useRef<HTMLDivElement | null>(null);
@@ -83,7 +91,7 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
   const glRef = useRef<ReturnType<typeof createSystemGl> | null>(null);
   const [gpu, setGpu] = useState(false);
   const [gpuTried, setGpuTried] = useState(false);
-  const hits = useRef<{ i: number; x: number; y: number }[]>([]);
+  const hits = useRef<{ i: number; x: number; y: number; moonP?: number; moonM?: number }[]>([]);
   const drag = useRef<{ x: number; y: number; yaw: number; pitch: number; moved: number } | null>(null);
 
   useEffect(() => {
@@ -126,8 +134,12 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
   useEffect(() => {
     const r = glRef.current;
     if (!r || !gpu) return;
+    // 分离双星:行星绕主星(A)而不是质心
+    const focalBodies = (size.h / 2) / Math.tan((55 * Math.PI) / 360);
+    const starPairNow = binaryStarPair(design, year);
+    const orbitOff: [number, number, number] = design.binaryStar && design.binaryStar.tier !== 'close' && starPairNow ? starPairNow.main : [0, 0, 0];
     const list = design.planets
-      .filter((_p, i) => !(showMoons === false && design.habitableMoon?.index === i))
+      .filter((_p, i) => !(showMoons === false && design.habitableMoon?.index === i) && !(design.binary && design.binary.index === i))
       .map((p, i) => {
         const isMoon = design.habitableMoon?.index === i;
         const ang = isMoon ? planetPhase(design.habitableMoon!.parent) + 0.16 : planetPhase(i);
@@ -135,7 +147,7 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
         const pos = st ? [st.x, st.z, st.y] : planetPos(p, ang);
         return {
           key: `p${i}`,
-          pos: [pos[0] * scene.scale, pos[1] * scene.scale, pos[2] * scene.scale] as [number, number, number],
+          pos: [(pos[0] + orbitOff[0]) * scene.scale, (pos[1] + orbitOff[1]) * scene.scale, (pos[2] + orbitOff[2]) * scene.scale] as [number, number, number],
           // 视觉半径:和原来 2D 圆的 3–9px 大致对应(dist≈16、高≈600 时 0.08 场景单位 ≈ 3px)
           radius: Math.max(1e-6, p.radius * (6371 / 1.496e8) * scene.scale),
           // 自转(按自转周期,单位小时)+ 自转轴倾角
@@ -153,16 +165,18 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
       const compP = design.planets[binIdx];
       if (homeP && compP) {
         const ang0 = planetPhase(design.home.index);
-        const hp = planetPos(homeP, ang0);
+        const stHome = year === undefined ? null : positionAtAU({ ...homeP, nodeDeg: -homeP.nodeDeg, phase0: ang0 }, year, design.star.mass);
+        const hp = stHome ? [stHome.x, stHome.z, stHome.y] : planetPos(homeP, ang0);
         // 真实互绕间距在 1AU 视距下不足 1 像素:显示上按"主行星轨道半径的 1.6%"给可见下限(周期仍是真实值)
-        const sepScene = Math.max(bin.separationAU * scene.scale, (homeP?.a ?? 1) * scene.scale * 0.016);
+        // 屏幕间距下限约 14px:真实互绕间距在 AU 视距下远小于 1px,否则伴星与主星重叠看不见
+        const sepScene = Math.max(bin.separationAU * scene.scale, (14 * Math.max(1e-6, cam.dist)) / focalBodies);
           // 互绕按真实周期
           const theta = ((year ?? 0) * 365.25 / Math.max(0.01, bin.periodDays)) * Math.PI * 2;
         // 伴星相对主行星的偏移(场景单位)
         const off = [Math.cos(theta) * sepScene, 0, Math.sin(theta) * sepScene] as [number, number, number];
         list.push({
           key: `p${binIdx}` + '-bin',
-          pos: [hp[0] * scene.scale + off[0], hp[1] * scene.scale + off[1], hp[2] * scene.scale + off[2]],
+          pos: [(hp[0] + orbitOff[0]) * scene.scale + off[0], (hp[1] + orbitOff[1]) * scene.scale + off[1], (hp[2] + orbitOff[2]) * scene.scale + off[2]],
           radius: Math.max(1e-6, compP.radius * (6371 / 1.496e8) * scene.scale),
           spin: (((year ?? 0) * 365.25 * 24) / Math.max(0.1, compP.rotation)) * Math.PI * 2,
           tilt: (compP.tilt * Math.PI) / 180,
@@ -173,23 +187,31 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
     }
     // U1:卫星 —— 严格开普勒圆轨道:真实间距(AU)+ 周期(天)+ 母行星倾角,不用视觉放大
     // 星系全景不画卫星(太密);进入子星系视角(跟随某行星/相机很近)才画
-    const subSystemView = followIdx !== null || cam.dist < 3;
+    // 子星系视角:跟随某行星、相机足够近、或有选中行星(否则卫星/轨道在星系全景里太小)
+    const subSystemView = followIdx !== null || cam.dist < 8 || selected >= 0;
     const R_EARTH_AU = 6371 / 1.496e8;
     if (showMoons !== false && subSystemView) {
-      design.planets.forEach((p, pi) => {
+      const focusForMoons = followIdx ?? selected ?? (design.habitableMoon ? design.habitableMoon.parent : null);
+      if (focusForMoons !== null && design.planets[focusForMoons]) {
+        const p = design.planets[focusForMoons];
+        const pi = focusForMoons;
         (p.moons ?? []).forEach((m, mi) => {
           const ang = planetPhase(pi);
-          const pp = planetPos(p, ang);
+          const stP = year === undefined ? null : positionAtAU({ ...p, nodeDeg: -p.nodeDeg, phase0: ang }, year, design.star.mass);
+          const pp0 = stP ? [stP.x, stP.z, stP.y] : planetPos(p, ang);
+          const pp = [pp0[0] + orbitOff[0], pp0[1] + orbitOff[1], pp0[2] + orbitOff[2]];
           // 间距:distance 单位 = 母行星半径数 → AU
           const sepAU = Math.max(1, m.distance) * Math.max(0.2, p.radius) * R_EARTH_AU;
+          const sepMinAU = (26 * Math.max(1e-6, cam.dist)) / focalBodies / scene.scale;
+          const sepDraw = Math.max(sepAU, sepMinAU);
           // 周期:开普勒(绕母行星质量),真实天数
           const periodDays = Math.max(0.01, moonPeriodDays(Math.max(1, m.distance), Math.max(0.2, p.radius), p.mass));
           const theta = ((year ?? 0) * 365.25 / periodDays + mi * 2.39996) % (Math.PI * 2);
           // 轨道面:按母行星自转倾角倾斜(绕 x 轴转)
           const ct = Math.cos((p.tilt * Math.PI) / 180);
           const st = Math.sin((p.tilt * Math.PI) / 180);
-          const dx = Math.cos(theta) * sepAU;
-          const dz = Math.sin(theta) * sepAU;
+          const dx = Math.cos(theta) * sepDraw;
+          const dz = Math.sin(theta) * sepDraw;
           const dy = dz * st;
           const dz2 = dz * ct;
           list.push({
@@ -197,18 +219,53 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
             pos: [(pp[0] + dx) * scene.scale, (pp[1] + dy) * scene.scale, (pp[2] + dz2) * scene.scale],
             // 视觉半径仍按卫星自身半径(真实比例在 AU 尺度下看不见,放大视距后才显现)
             // 卫星真实半径太小(真实尺度下 1px 都不到):按母行星视觉半径的 8% 给一个可见下限
-            radius: Math.max(m.radius * (6371 / 1.496e8) * scene.scale, Math.max(0.2, p.radius) * (6371 / 1.496e8) * scene.scale * 0.08),
+            radius: Math.min(0.02, Math.max((1.6 * Math.max(1e-6, cam.dist)) / focalBodies, Math.max(m.radius * (6371 / 1.496e8), Math.max(0.2, p.radius) * (6371 / 1.496e8) * 0.08) * scene.scale)),
             // 潮汐锁定的卫星:自转角 = 轨道相位(永远同一面朝母行星)
             spin: theta,
             tilt: (p.tilt * Math.PI) / 180,
-            tex: null,
+            tex: moonTex?.get(`${pi}-${mi}`) ?? null,
             tint: [0.72, 0.73, 0.76],
           });
         });
-      });
+      }
     }
     r.setBodies(list);
-  }, [gpu, design, year, bodyTex, scene, showMoons, followIdx, cam.dist]);
+    // 卫星轨道线数据(GPU,和行星轨道同一 line 程序):子星系视角下才有
+    {
+      const fPlanet = followIdx ?? selected ?? (design.habitableMoon ? design.habitableMoon.parent : null);
+      const subsys = followIdx !== null || cam.dist < 8 || selected >= 0;
+      if (!subsys || fPlanet === null || !design.planets[fPlanet]) {
+        r.setMoonOrbits(new Float32Array(0));
+        return;
+      }
+      const pp = design.planets[fPlanet];
+      const ang0 = planetPhase(fPlanet);
+      const st0 = year === undefined ? null : positionAtAU({ ...pp, nodeDeg: -pp.nodeDeg, phase0: ang0 }, year, design.star.mass);
+      const parentPos = st0 ? [st0.x, st0.z, st0.y] : planetPos(pp, ang0);
+      const offMain = design.binaryStar && design.binaryStar.tier !== 'close' ? (binaryStarPair(design, year)?.main ?? [0, 0, 0]) : [0, 0, 0];
+      const bx = parentPos[0] + offMain[0];
+      const by = parentPos[1];
+      const bz = parentPos[2] + offMain[2];
+      const ct = Math.cos((pp.tilt * Math.PI) / 180);
+      const stt = Math.sin((pp.tilt * Math.PI) / 180);
+      const focalM = (size.h / 2) / Math.tan((55 * Math.PI) / 360);
+      const segs: number[] = [];
+      (pp.moons ?? []).forEach((m, mi) => {
+        const sepAU = Math.max(1, m.distance) * Math.max(0.2, pp.radius) * (6371 / 1.496e8);
+        const sep = Math.max(sepAU * scene.scale, (26 * Math.max(1e-6, cam.dist)) / focalM) / scene.scale;
+        const col = mi % 2 ? [0.55, 0.64, 0.85] : [0.72, 0.8, 0.95];
+        const N = 96;
+        for (let k = 0; k < N; k++) {
+          const t0 = (k / N) * Math.PI * 2;
+          const t1 = ((k + 1) / N) * Math.PI * 2;
+          const p0 = [(bx + Math.cos(t0) * sep) * scene.scale, (by + Math.sin(t0) * sep * stt) * scene.scale, (bz + Math.sin(t0) * sep * ct) * scene.scale];
+          const p1 = [(bx + Math.cos(t1) * sep) * scene.scale, (by + Math.sin(t1) * sep * stt) * scene.scale, (bz + Math.sin(t1) * sep * ct) * scene.scale];
+          segs.push(p0[0], p0[1], p0[2], col[0], col[1], col[2], p1[0], p1[1], p1[2], col[0], col[1], col[2]);
+        }
+      });
+      r.setMoonOrbits(new Float32Array(segs));
+    }
+  }, [gpu, design, year, bodyTex, scene, showMoons, followIdx, cam.dist, selected, moonTex, texVersion]);
 
   // 滚轮缩放(非 passive,免得页面跟着滚)
   useEffect(() => {
@@ -352,43 +409,37 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
     }
 
     // 行星与名字
-    const hit: { i: number; x: number; y: number }[] = [];
+    const hit: { i: number; x: number; y: number; moonP?: number; moonM?: number }[] = [];
     const homeAng = planetPhase(design.home.index);
-    /** 双固态行星系:质心落在主行星轨道上,两颗各离质心 aHome/aComp(AU) */
     const binPair = design.binary && showMoons ? design.binary : undefined;
-    const binPos = (which: 'home' | 'comp'): [number, number, number] | null => {
-      if (!binPair) return null;
-      const bary = planetPos(design.planets[design.home.index], homeAng);
-      // 轨道切向 = 半径方向叉上轴(近似,够画示意)
-      const r = Math.hypot(bary[0], bary[2]) || 1;
-      const tx = -bary[2] / r;
-      const tz = bary[0] / r;
-      const d = which === 'home' ? (binPair.aHomeAU ?? 0) : (binPair.aCompanionAU ?? 0);
-      const sign = which === 'home' ? -1 : 1;
-      return [bary[0] + tx * d * sign, bary[1], bary[2] + tz * d * sign];
+    // 分离双星:主星偏移(和 GPU 一致)
+    const pairStar = design.binaryStar && design.binaryStar.tier !== 'close' ? binaryStarPair(design, year) : null;
+    const offMain2: [number, number, number] = pairStar ? pairStar.main : [0, 0, 0];
+    const focal2 = (size.h / 2) / Math.tan((55 * Math.PI) / 360);
+    /** 主行星当年的位置(AU,含主星偏移) */
+    const homePosYear = (): [number, number, number] => {
+      const homeP = design.planets[design.home.index];
+      const st = year === undefined ? null : positionAtAU({ ...homeP, nodeDeg: -homeP.nodeDeg, phase0: homeAng }, year, design.star.mass);
+      const b = st ? [st.x, st.z, st.y] : planetPos(homeP, homeAng);
+      return [b[0] + offMain2[0], b[1] + offMain2[1], b[2] + offMain2[2]];
+    };
+    /** 双固态伴星相对主行星的偏移(场景单位;14px 屏幕下限,和 GPU 同一公式) */
+    const pairOffScene = (): [number, number, number] => {
+      if (!binPair) return [0, 0, 0];
+      const sepAU = Math.max(binPair.separationAU, (14 * Math.max(1e-6, cam.dist)) / focal2 / scene.scale);
+      const theta = ((year ?? 0) * 365.25 / Math.max(0.01, binPair.periodDays)) * Math.PI * 2;
+      return [Math.cos(theta) * sepAU, 0, Math.sin(theta) * sepAU];
     };
     const hm = design.habitableMoon;
-    /** 双固态行星系:两颗的屏幕位置(太近就推开到至少 7px,不然叠成一个点) */
+    /** 双固态:主/伴的屏幕位置(直接从同一套 scene 坐标投影,不再另做像素推导) */
     const pairScreens: Record<string, [number, number]> = {};
     if (binPair) {
-      const a = (() => { const q = binPos('home'); return q ? toScreen(q) : null; })();
-      const b = (() => { const q = binPos('comp'); return q ? toScreen(q) : null; })();
-      if (a && b) {
-        const dx = b[0] - a[0];
-        const dy = b[1] - a[1];
-        const d = Math.hypot(dx, dy);
-        const MIN = 7;
-        if (d < MIN) {
-          const ux = d > 0.001 ? dx / d : 1;
-          const uy = d > 0.001 ? dy / d : 0;
-          const push = (MIN - d) / 2;
-          pairScreens.home = [a[0] - ux * push, a[1] - uy * push];
-          pairScreens.comp = [b[0] + ux * push, b[1] + uy * push];
-        } else {
-          pairScreens.home = a;
-          pairScreens.comp = b;
-        }
-      }
+      const hp = homePosYear();
+      const off = pairOffScene();
+      const a = toScreen([hp[0], hp[1], hp[2]]);
+      const b = toScreen([hp[0] + off[0], hp[1] + off[1], hp[2] + off[2]]);
+      if (a) pairScreens.home = a;
+      if (b) pairScreens.comp = b;
     }
     design.planets.forEach((p, i) => {
       const isCompanion = design.binary?.index === i;
@@ -399,7 +450,10 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
       const pairScreen = pairKey ? pairScreens[pairKey] : undefined;
       // orbitTime uses the xy ecliptic; the renderer uses xz with the opposite node convention.
       const state = year === undefined ? null : positionAtAU({ ...p, nodeDeg: -p.nodeDeg, phase0: ang }, year, design.star.mass);
-      const xy = pairScreen ?? toScreen(state ? [state.x, state.z, state.y] : planetPos(p, ang));
+      const widePair2 = design.binaryStar && design.binaryStar.tier !== 'close' ? binaryStarPair(design, year) : null;
+      const off2: [number, number, number] = widePair2 ? widePair2.main : [0, 0, 0];
+      const basePos = state ? [state.x, state.z, state.y] : planetPos(p, ang);
+      const xy = pairScreen ?? toScreen([basePos[0] + off2[0], basePos[1] + off2[1], basePos[2] + off2[2]]);
       if (!xy) return;
       const baseR = Math.max(3.2, Math.min(9, 2.6 + p.radius * 1.4));
       // 相机推进时:被瞄准的行星按进度长大(到位时半径约半屏),其他东西淡出
@@ -421,8 +475,8 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
           ctx.fill();
         }
       }
-      if (!gpu) ctx.fillStyle = planetColor(p);
-      if (!gpu) ctx.fill();
+      if (!gpu || isCompanion) ctx.fillStyle = planetColor(p);
+      if (!gpu || isCompanion) ctx.fill();
       // US 风格:半径够大就贴上这颗行星的真实贴图(equirect 纹理裁进圆盘 + 明暗)
       const tex = bodyTex?.get(i);
       if (!gpu && tex && r >= 4) {
@@ -503,36 +557,72 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
         }
       }
     }
-    const subSystemView = followIdx !== null || cam.dist < 3;
-    // 卫星轨道:子星系视角(跟着某颗行星)时,把它周围的卫星轨道画出来
+    // 子星系视角:跟随某行星、相机足够近、或有选中行星(否则卫星/轨道在星系全景里太小)
+    const subSystemView = followIdx !== null || cam.dist < 8 || selected >= 0;
+    // 卫星:子星系视角下画轨道 —— 和行星轨道同一种做法:3D 采样圆 + 逐点投影
     if (subSystemView) {
-      const focusPlanet = followIdx ?? (design.habitableMoon ? design.habitableMoon.parent : null);
+      const focusPlanet = followIdx ?? selected ?? (design.habitableMoon ? design.habitableMoon.parent : null);
+      const focal = (size.h / 2) / Math.tan((55 * Math.PI) / 360);
+      const distCam = Math.max(1e-6, cam.dist);
       if (focusPlanet !== null && design.planets[focusPlanet]) {
         const pp = design.planets[focusPlanet];
         const ang0 = planetPhase(focusPlanet);
         const st0 = year === undefined ? null : positionAtAU({ ...pp, nodeDeg: -pp.nodeDeg, phase0: ang0 }, year, design.star.mass);
         const parentPos = st0 ? [st0.x, st0.z, st0.y] : planetPos(pp, ang0);
-        const ps = toScreen([parentPos[0] * scene.scale, parentPos[1] * scene.scale, parentPos[2] * scene.scale]);
-        if (ps) {
-          const focal = (size.h / 2) / Math.tan((55 * Math.PI) / 360);
-          const distCam = Math.max(1e-6, cam.dist);
-          (pp.moons ?? []).forEach((m, mi) => {
-            const sepAU = Math.max(1, m.distance) * Math.max(0.2, pp.radius) * (6371 / 1.496e8);
-            const rPx = (focal * sepAU * scene.scale) / distCam;
-            if (rPx < 1.2) return;
-            ctx.save();
-            ctx.setLineDash([3, 4]);
-            ctx.strokeStyle = mi % 2 ? 'rgba(150,175,215,0.30)' : 'rgba(190,205,235,0.36)';
-            ctx.lineWidth = 1;
+        const offMain = design.binaryStar && design.binaryStar.tier !== 'close' ? (binaryStarPair(design, year)?.main ?? [0, 0, 0]) : [0, 0, 0];
+        const bx = parentPos[0] + offMain[0];
+        const by = parentPos[1];
+        const bz = parentPos[2] + offMain[2];
+        const ct = Math.cos((pp.tilt * Math.PI) / 180);
+        const stt = Math.sin((pp.tilt * Math.PI) / 180);
+        const sepOf = (m: { distance: number }) => {
+          const sepAU = Math.max(1, m.distance) * Math.max(0.2, pp.radius) * (6371 / 1.496e8);
+          return Math.max(sepAU * scene.scale, (12 * distCam) / focal) / scene.scale;
+        };
+        (pp.moons ?? []).forEach((m, mi) => {
+          const sep = sepOf(m);
+          ctx.save();
+          ctx.setLineDash([3, 4]);
+          ctx.strokeStyle = mi % 2 ? 'rgba(150,175,215,0.32)' : 'rgba(190,205,235,0.4)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          let started = false;
+          for (let k = 0; k <= 96; k++) {
+            const th = (k / 96) * Math.PI * 2;
+            const dx = Math.cos(th) * sep;
+            const dz = Math.sin(th) * sep;
+            const q = toScreen([bx + dx, by + dz * stt, bz + dz * ct]);
+            if (!q) {
+              started = false;
+              continue;
+            }
+            if (!started) {
+              ctx.moveTo(q[0], q[1]);
+              started = true;
+            } else ctx.lineTo(q[0], q[1]);
+          }
+          ctx.stroke();
+          ctx.restore();
+        });
+        // 命中区:卫星当前位置(和轨道同一套公式)
+        (pp.moons ?? []).forEach((m, mi) => {
+          const sep = sepOf(m);
+          const th = ((year ?? 0) * 365.25 / Math.max(0.01, moonPeriodDays(Math.max(1, m.distance), Math.max(0.2, pp.radius), pp.mass)) + mi * 2.39996) % (Math.PI * 2);
+          const dx = Math.cos(th) * sep;
+          const dz = Math.sin(th) * sep;
+          const q = toScreen([bx + dx, by + dz * stt, bz + dz * ct]);
+          if (q) hit.push({ i: focusPlanet, moonP: focusPlanet, moonM: mi, x: q[0], y: q[1] });
+          if (q) {
+            ctx.fillStyle = 'rgba(220,230,245,0.95)';
             ctx.beginPath();
-            ctx.ellipse(ps[0], ps[1], rPx, rPx * Math.max(0.25, Math.cos((pp.tilt * Math.PI) / 180)), 0, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.restore();
-          });
-        }
+            ctx.arc(q[0], q[1], 2.4, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        });
       }
     }
     hits.current = hit;
+    (canvas.current as unknown as { __hits?: unknown }).__hits = hit;
   }, [cam, scene, size, dpr, gpu, design, names, selected, year, showMoons, bodyTex, focusT, focusIndex]);
 
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -554,16 +644,19 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    let best = -1;
+    let best: { i: number; x: number; y: number; moonP?: number; moonM?: number } | null = null;
     let bd = Infinity;
     for (const h of hits.current) {
       const dist = Math.hypot(x - h.x, y - h.y);
-      if (dist < 16 && dist < bd) {
+      if (dist < (h.moonP !== undefined ? 24 : 16) && dist < bd) {
         bd = dist;
-        best = h.i;
+        best = h;
       }
     }
-    if (best >= 0) onSelect(best);
+    if (best) {
+      if (best.moonP !== undefined && best.moonM !== undefined) onSelectMoon?.(best.moonP, best.moonM);
+      else onSelect(best.i);
+    }
   };
   /** 双击行星:打开它(Studio 进地球仪);命中半径和单击一致 */
   /** 双击行星：打开它（Studio 进地球仪）；空白处仍回到正面 */
@@ -572,17 +665,18 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    let best = -1;
+    let best: { i: number; x: number; y: number; moonP?: number; moonM?: number } | null = null;
     let bd = Infinity;
     for (const h of hits.current) {
       const dist = Math.hypot(x - h.x, y - h.y);
-      if (dist < 16 && dist < bd) {
+      if (dist < (h.moonP !== undefined ? 24 : 16) && dist < bd) {
         bd = dist;
-        best = h.i;
+        best = h;
       }
     }
-    if (best < 0) return false;
-    onOpen(best, { x, y, r: 18 });
+    if (!best) return false;
+    const openIdx = best.moonP ?? best.i;
+    onOpen(openIdx, { x, y, r: 18 });
     return true;
   };
 
@@ -592,9 +686,38 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
     const p = design.planets[focusIndex];
     if (!p) return;
     // 相机要飞到的位置必须和 GPU 渲染的位置完全一致(否则会飞到错的地方)
-    const ang = planetPhase(focusIndex);
+    // 宜居卫星系:那颗"行星"实际画在母行星相位 + 0.16 上
+    const ang = design.habitableMoon && design.habitableMoon.index === focusIndex ? planetPhase(design.habitableMoon.parent) + 0.16 : planetPhase(focusIndex);
     const stFocus = year === undefined ? null : positionAtAU({ ...p, nodeDeg: -p.nodeDeg, phase0: ang }, year, design.star.mass);
     const pos: [number, number, number] = stFocus ? [stFocus.x, stFocus.z, stFocus.y] : planetPos(p, ang);
+    // 分离双星:行星实际渲染位置 = 轨道位置 + 主星偏移(和 GPU 一致)
+    const pairFocus = design.binaryStar && design.binaryStar.tier !== 'close' ? binaryStarPair(design, year) : null;
+    if (pairFocus) {
+      pos[0] += pairFocus.main[0];
+      pos[1] += pairFocus.main[1];
+      pos[2] += pairFocus.main[2];
+    }
+    // 卫星:焦点落在卫星本身(母行星位置 + 卫星轨道偏移)
+    const fm = focusMoon && focusMoon.p === focusIndex ? focusMoon : null;
+    let focusRadius = p.radius;
+    if (fm) {
+      const mm = p.moons?.[fm.m];
+      if (mm) {
+        const sepAU = Math.max(1, mm.distance) * Math.max(0.2, p.radius) * (6371 / 1.496e8);
+        const focal0 = (size.h / 2) / Math.tan((55 * Math.PI) / 360);
+        const sepDrawAU = Math.max(sepAU, (26 * Math.max(1e-6, camRef.current.dist)) / focal0 / scene.scale);
+        const sepAUf = sepDrawAU;
+        const per = Math.max(0.01, moonPeriodDays(Math.max(1, mm.distance), Math.max(0.2, p.radius), p.mass));
+        const th = ((year ?? 0) * 365.25 / per + fm.m * 2.39996) % (Math.PI * 2);
+        const ct2 = Math.cos((p.tilt * Math.PI) / 180);
+        const st2 = Math.sin((p.tilt * Math.PI) / 180);
+        const dzm = Math.sin(th) * sepAUf;
+        pos[0] += Math.cos(th) * sepAUf;
+        pos[1] += dzm * st2;
+        pos[2] += dzm * ct2;
+        focusRadius = mm.radius;
+      }
+    }
     // 双固态伴星:焦点位置 = 主行星位置 + 互绕偏移(和 GPU 画的一致)
     if (design.binary && design.binary.index === focusIndex) {
       const homeP = design.planets[design.home.index];
@@ -622,11 +745,10 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
       pitch: from.pitch,
       // 视距:让目标行星在画面里占约 55% 短边(相机会一直推到"贴上表面")
       dist: (() => {
-        const pl = design.planets[focusIndex];
         // 真实半径(场景单位):R⊕ → AU → 场景单位
-        const rScene = Math.max(1e-6, (pl?.radius ?? 1) * (6371 / 1.496e8) * scene.scale);
+        const rScene = Math.max(1e-6, focusRadius * (6371 / 1.496e8) * scene.scale);
         const focal = (size.h / 2) / Math.tan((55 * Math.PI) / 360);
-        return Math.max(0.06, (focal * rScene) / (0.55 * Math.min(size.w, size.h)));
+        return Math.max(1e-6, (focal * rScene) / (0.32 * Math.min(size.w, size.h)));
       })(),
       at,
     };
@@ -648,7 +770,7 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
-  }, [focusIndex, onFocusDone, design, year]);
+  }, [focusIndex, focusMoon, onFocusDone, design, year]);
 
   // 相机跟随天体:播放时 at 跟着它走(否则相机停在原地,星球跑掉了)
   useEffect(() => {
@@ -658,6 +780,12 @@ export function SystemGlobe({ design, names, belts, selected, onSelect, onOpen, 
     const ang = planetPhase(followIdx);
     const st = year === undefined ? null : positionAtAU({ ...p, nodeDeg: -p.nodeDeg, phase0: ang }, year, design.star.mass);
     const pos = st ? [st.x, st.z, st.y] : planetPos(p, ang);
+    const pairF = design.binaryStar && design.binaryStar.tier !== 'close' ? binaryStarPair(design, year) : null;
+    if (pairF) {
+      pos[0] += pairF.main[0];
+      pos[1] += pairF.main[1];
+      pos[2] += pairF.main[2];
+    }
     setCam((c) => ({ ...c, at: [pos[0] * scene.scale, pos[1] * scene.scale, pos[2] * scene.scale] }));
   }, [year, followIdx, design, scene]);
 

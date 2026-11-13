@@ -118,12 +118,18 @@ export function systemScene(design: AstroDesign, belts: readonly BeltDesign[]): 
   const lines: number[] = [];
   // 轨道线采样数:拉近后弦线误差要在 1px 以内(128 → 1024)
   const seg = 1024;
+  // 分离双星(wide/triple):行星绕主星(A),不是绕质心;轨道环跟着偏移
+  const starPairNow = binaryStarPair(design, 0);
+  const wide = !!(design.binaryStar && design.binaryStar.tier !== 'close' && starPairNow);
+  const ox = wide ? starPairNow!.main[0] : 0;
+  const oy = wide ? starPairNow!.main[1] : 0;
+  const oz = wide ? starPairNow!.main[2] : 0;
   const pushRing = (a: number, e: number, incDeg: number, nodeDeg: number, rgb: Vec3) => {
     let prev: Vec3 | null = null;
     for (let k = 0; k <= seg; k++) {
       const th = (k / seg) * Math.PI * 2;
       const q = planetPos({ a, ecc: e, incDeg, nodeDeg }, th);
-      if (prev) lines.push(prev[0] * scale, prev[1] * scale, prev[2] * scale, q[0] * scale, q[1] * scale, q[2] * scale, rgb[0], rgb[1], rgb[2]);
+      if (prev) lines.push((prev[0] + ox) * scale, (prev[1] + oy) * scale, (prev[2] + oz) * scale, (q[0] + ox) * scale, (q[1] + oy) * scale, (q[2] + oz) * scale, rgb[0], rgb[1], rgb[2]);
       prev = q;
     }
   };
@@ -259,6 +265,8 @@ export interface SystemGlRenderer {
   setScene(s: SystemScene): void;
   /** U1:设置要画的行星球(位置/半径/贴图);每帧 draw 时用最新的这一份 */
   setBodies(bodies: readonly GpuBody[]): void;
+  /** 卫星轨道线:每顶点 [x,y,z,r,g,b](LINES,动态更新) */
+  setMoonOrbits(verts: Float32Array): void;
   draw(cam: SystemCamera, w: number, h: number, dpr: number): Float32Array;
   dispose(): void;
 }
@@ -403,6 +411,9 @@ export function createSystemGl(canvas: HTMLCanvasElement): SystemGlRenderer | nu
   let nStars = 0;
   let nBelt = 0;
   let nLine = 0;
+  let moonLineBuf: WebGLBuffer | null = null;
+  let moonLineVao: WebGLVertexArrayObject | null = null;
+  let nMoonLine = 0;
 
   const setPoints = (buf: WebGLBuffer | null, vao: WebGLVertexArrayObject | null, data: Float32Array, stride: number) => {
     if (!buf || !vao) return;
@@ -474,6 +485,23 @@ export function createSystemGl(canvas: HTMLCanvasElement): SystemGlRenderer | nu
       }
     },
 
+    setMoonOrbits(verts) {
+      if (!moonLineVao) {
+        moonLineVao = gl.createVertexArray();
+        moonLineBuf = gl.createBuffer();
+        gl.bindVertexArray(moonLineVao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, moonLineBuf);
+        gl.enableVertexAttribArray(lineLoc.pos);
+        gl.vertexAttribPointer(lineLoc.pos, 3, gl.FLOAT, false, 24, 0);
+        gl.enableVertexAttribArray(lineLoc.col);
+        gl.vertexAttribPointer(lineLoc.col, 3, gl.FLOAT, false, 24, 12);
+        gl.bindVertexArray(null);
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, moonLineBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+      nMoonLine = verts.length / 6;
+    },
+
     setBodies(next) {
       bodies = next;
     },
@@ -515,6 +543,14 @@ export function createSystemGl(canvas: HTMLCanvasElement): SystemGlRenderer | nu
       gl.uniformMatrix4fv(lineLoc.mvp, false, mvp);
       gl.bindVertexArray(lineVao);
       if (nLine) gl.drawArrays(gl.LINES, 0, nLine * 2);
+      // 卫星轨道线(动态,跟随母行星)
+      if (nMoonLine && moonLineVao) {
+        gl.useProgram(lineProg);
+        gl.uniformMatrix4fv(lineLoc.mvp, false, mvp);
+        gl.bindVertexArray(moonLineVao);
+        gl.drawArrays(gl.LINES, 0, nMoonLine);
+        gl.bindVertexArray(null);
+      }
 
       // U1:行星球体(带贴图;深度测试让它和轨道线互相遮挡)
       if (bodies.length && sphereProg) {
@@ -564,8 +600,8 @@ export function createSystemGl(canvas: HTMLCanvasElement): SystemGlRenderer | nu
     },
 
     dispose() {
-      for (const b of [starBuf, beltBuf, lineBuf]) if (b) gl.deleteBuffer(b);
-      for (const v of [starVao, beltVao, lineVao]) if (v) gl.deleteVertexArray(v);
+      for (const b of [starBuf, beltBuf, lineBuf, moonLineBuf]) if (b) gl.deleteBuffer(b);
+      for (const v of [starVao, beltVao, lineVao, moonLineVao]) if (v) gl.deleteVertexArray(v);
       gl.deleteProgram(pointProg);
       gl.deleteProgram(lineProg);
       if (sphereProg) gl.deleteProgram(sphereProg);

@@ -151,7 +151,7 @@ import { GlobeSky } from './GlobeSky';
 import { orbitYears } from '../../gen/astroDesign';
 import { yearsPerSecondOf } from '../systemClock';
 import { canHostCiv } from '../../gen/civilizable';
-import { bodyTexture, dropBodyTextures } from './bodyGlobe';
+import { bodyTexture, dropBodyTextures, moonTextureOf } from './bodyGlobe';
 import { planetSurface } from '../../gen/astroWorlds';
 import { createNamer } from '../../gen/names';
 import { applyOverrides, emptyOverrides } from '../../gen/system';
@@ -409,9 +409,20 @@ export function Studio(p: StudioProps) {
   const [sysStage, setSysStage] = useState<'system' | 'globe'>('globe');
   /** 顶层三模式:星系(3D 场景)/ 地图(原版 Studio)/ 文明(天体文明) */
   const [studioMode, setStudioMode] = useState<'galaxy' | 'map' | 'civ'>('galaxy');
+  /** 星系模式:左右两栏共用的选中天体(树 / 参数栏同步) */
+  const [galaxySel, setGalaxySel] = useState<{ kind: 'star' | 'companion' | 'planet' | 'moon'; i?: number; p?: number; m?: number }>({ kind: 'planet', i: 0 });
+
+
+  // 树选中 → 星图 selected 同步(否则卫星属于"另一颗行星",星图上没有卫星可点)
+  useEffect(() => {
+    if (galaxySel.kind === 'planet' && galaxySel.i !== undefined) setSysSelected(galaxySel.i);
+    else if ((galaxySel.kind === 'moon' || galaxySel.kind === 'companion') && galaxySel.p !== undefined) setSysSelected(galaxySel.p);
+  }, [galaxySel]);
   /** 双击行星的缩放起点(舞台像素;null = 不缩放) */
   /** 相机推进目标行星(null = 不推进) */
   const [sysFocus, setSysFocus] = useState<number | null>(null);
+  /** 相机推进目标是卫星时记这里 */
+  const [sysFocusMoon, setSysFocusMoon] = useState<{ p: number; m: number } | null>(null);
   /** 返回星系视角时"从哪颗行星拉远"(null = 不拉远) */
   /** 切地球仪时星图留在后面淡出(减少硬切) */
   const [sysGhost, setSysGhost] = useState(false);
@@ -425,6 +436,8 @@ export function Studio(p: StudioProps) {
   const [sysPullFrom, setSysPullFrom] = useState<number | null>(null);
   /** US 式星图:各行星的小贴图(懒加载;生成一张塞一张,星图里直接画成球) */
   const bodyTexRef = useRef<Map<number, HTMLCanvasElement>>(new Map());
+  /** 卫星贴图(懒生成;键 `${行星}-${卫星}`) */
+  const moonTexRef = useRef<Map<string, HTMLCanvasElement>>(new Map());
   const [bodyTexVersion, setBodyTexVersion] = useState(0);
   /** R1-1:预览天体的样式缩略图(小尺寸 dataURL;非主行星时用它替换主行星缩略图) */
   const [bodyThumb, setBodyThumb] = useState<string | null>(null);
@@ -433,7 +446,7 @@ export function Studio(p: StudioProps) {
   /** 7C:现画非主行星地表时给加载态 */
   const [bodyLoading, setBodyLoading] = useState(false);
   /** N12A:从地球仪点「编辑这颗行星」进来时,编辑器先选中哪颗 */
-  const [sysEditFocus, setSysEditFocus] = useState<{ kind: 'planet'; planet: number } | null>(null);
+  const [sysEditFocus, setSysEditFocus] = useState<{ kind: 'planet' | 'moon'; planet: number; moon?: number } | null>(null);
   /** N12A:覆盖表改完 +1,让预览贴图按新设计重算 */
   const [bodyRev, setBodyRev] = useState(0);
   // ---- 规则:选的那一套、跟上「我的规则」里调过的 ----
@@ -1880,6 +1893,20 @@ export function Studio(p: StudioProps) {
   /** 星球系页:看的世界(和文明起源页同一份) */
   const sysWorld = p.baseWorld ?? p.data?.world ?? null;
   const sysAstro = useMemo(() => (sysWorld ? astroOf(sysWorld) : null), [sysWorld]);
+
+  // 选中行星 → 相机飞过去(切换选中时重新取景;卫星则飞到它的母行星)
+  useEffect(() => {
+    if (studioMode !== 'galaxy' || !sysAstro) return;
+    if (galaxySel.kind === 'moon' && galaxySel.p !== undefined && galaxySel.m !== undefined) {
+      setSysFocus(galaxySel.p);
+      setSysFocusMoon({ p: galaxySel.p, m: galaxySel.m });
+      return;
+    }
+    setSysFocusMoon(null);
+    const idx = galaxySel.kind === 'planet' ? galaxySel.i : galaxySel.p;
+    if (idx === undefined || idx === null) return;
+    setSysFocus((cur) => (cur === idx ? cur : idx));
+  }, [galaxySel, studioMode, sysAstro]);
   const sysNames = useMemo(() => (sysAstro && sysWorld ? namedBodies(sysAstro, sysWorld.params.seed, sysWorld.system) : null), [sysAstro, sysWorld]);
   const sysBelts = useMemo(() => (sysAstro && sysWorld ? beltsOf(sysAstro.design, sysWorld.params.seed, sysWorld.params.impact) : []), [sysAstro, sysWorld]);
   const STAGE_MS = reduce ? 0 : 700;
@@ -2273,6 +2300,28 @@ const mapBodyPicker = sysAstro && civBodyViews.length ? (
       window.clearTimeout(timer);
     };
   }, [sysStage, sysAstro, image, locked, bodyRev]);
+
+  // US 式星图:懒加载卫星贴图(程序化,不推演地表)
+  useEffect(() => {
+    if (sysStage !== 'system' || !sysAstro || image || locked) return;
+    const design = sysAstro.design;
+    let cancelled = false;
+    design.planets.forEach((pl, pi) => {
+      (pl.moons ?? []).forEach((mm, mi) => {
+        const key = `${pi}-${mi}`;
+        if (moonTexRef.current.has(key) || cancelled) return;
+        try {
+          moonTexRef.current.set(key, moonTextureOf({ type: mm.type, radius: mm.radius, mass: mm.mass }, pRef.current.params.seed + pi * 101 + mi * 17));
+          setBodyTexVersion((v) => v + 1);
+        } catch {
+          /* 生成不出来就用纯色 */
+        }
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sysStage, sysAstro, bodyRev]);
   const ogShown = originsOn && !mixShown && !rpShown;
   const pageShown = mixShown || ogShown || rpShown;
   const mixPage = mixShown ? (
@@ -2842,18 +2891,20 @@ const mapBodyPicker = sysAstro && civBodyViews.length ? (
           }}
         />
       )}
-      {/* 星系模式左栏:星系树/天体编辑(实时改覆盖表) */}
+      {/* 星系模式:左 = 星系树,右 = 天体参数(各自独立面板) */}
       {studioMode === 'galaxy' && !p.phone && sysAstro && (
-        <aside
-          className="st-left galaxy-dark"
-          data-act="galaxy-left"
-          style={{ position: 'absolute', left: 0, top: 48, bottom: 104, width: 600, zIndex: 55, background: 'rgba(14,19,30,0.94)', border: '1px solid rgba(120,150,200,0.22)', borderLeft: 0, borderRadius: '0 12px 12px 0', overflow: 'auto', padding: 10, color: '#dbe6f7', filter: 'none' }}
-        >
-          <SystemEditor
-            miniGlobe={false}
+        <>
+          <aside
+            className="galaxy-dark"
+            data-act="galaxy-left"
+            style={{ position: 'absolute', left: 0, top: 48, bottom: 104, width: 270, zIndex: 55, background: 'rgba(14,19,30,0.96)', border: '1px solid rgba(120,150,200,0.22)', borderLeft: 0, borderRadius: '0 12px 12px 0', overflow: 'auto', padding: 8, color: '#dbe6f7' }}
+          >
+            <SystemEditor part="tree" miniGlobe={false}
             params={p.params}
             overrides={sysEditOv}
             focus={sysEditFocus ?? undefined}
+            sel={galaxySel}
+            onSel={setGalaxySel}
             onChange={(o) => {
               setSysEditOv(o);
               sysEditOvRef.current = o;
@@ -2861,12 +2912,35 @@ const mapBodyPicker = sysAstro && civBodyViews.length ? (
             onParams={(patch) => p.onParams({ ...p.params, ...patch })}
             onClose={() => {
               setCurrentSystem(sysEditOv);
-              setSysEditFocus(null);
               dropBodyTextures();
               setBodyRev((v) => v + 1);
             }}
-          />
-        </aside>
+            />
+          </aside>
+          <aside
+            className="galaxy-dark"
+            data-act="galaxy-right"
+            style={{ position: 'absolute', right: 0, top: 48, bottom: 104, width: 470, zIndex: 55, background: 'rgba(14,19,30,0.96)', border: '1px solid rgba(120,150,200,0.22)', borderRight: 0, borderRadius: '12px 0 0 12px', overflow: 'auto', padding: 10, color: '#dbe6f7' }}
+          >
+            <SystemEditor part="props" miniGlobe={false}
+            params={p.params}
+            overrides={sysEditOv}
+            focus={sysEditFocus ?? undefined}
+            sel={galaxySel}
+            onSel={setGalaxySel}
+            onChange={(o) => {
+              setSysEditOv(o);
+              sysEditOvRef.current = o;
+            }}
+            onParams={(patch) => p.onParams({ ...p.params, ...patch })}
+            onClose={() => {
+              setCurrentSystem(sysEditOv);
+              dropBodyTextures();
+              setBodyRev((v) => v + 1);
+            }}
+            />
+          </aside>
+        </>
       )}
       {studioMode === 'map' ? left : null}
       {!p.phone && (
@@ -2973,18 +3047,26 @@ const mapBodyPicker = sysAstro && civBodyViews.length ? (
               names={sysNames.planets}
               belts={sysBelts}
               selected={sysSelected}
-              onSelect={setSysSelected}
+              onSelect={(i) => { setSysSelected(i); setGalaxySel({ kind: 'planet', i }); }}
+              onSelectMoon={(pIdx, mIdx) => {
+                setGalaxySel({ kind: 'moon', p: pIdx, m: mIdx });
+                setSysEditFocus({ kind: 'moon', planet: pIdx, moon: mIdx });
+              }}
               onOpen={(i) => {
                 setSysSelected(i);
                 setSysFocus(i);
               }}
               focusIndex={sysFocus}
+              focusMoon={sysFocusMoon}
               onFocusDone={() => {
                 // 星系模式:相机到位后留在同一个 3D 场景里(近处的球就是地表);不切地球仪
                 setSysFocus(null);
+                setSysFocusMoon(null);
               }}
               startFocusIndex={sysPullFrom}
               bodyTex={bodyTexRef.current}
+              moonTex={moonTexRef.current}
+              texVersion={bodyTexVersion}
               onPullDone={() => {
                 setSysPullFrom(null);
               }}

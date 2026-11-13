@@ -8,6 +8,8 @@
  * 只读预览:不改参数、不进存档;主行星仍然走原来的 App 缓存。
  */
 import { planetSurface } from '../../gen/astroWorlds';
+import { generateWorld } from '../../gen/world';
+import { moonWorldParams } from '../../gen/system';
 import { gasColorAt, gasTextureOf } from '../../gen/gasTexture';
 import { planetTypeOf } from '../../gen/astroDesign';
 import type { AstroSystem } from '../../gen/astro';
@@ -153,4 +155,59 @@ export function dropBodyTextures(): void {
 /** 缓存里有几张(调试 / 测试用) */
 export function bodyTextureCount(): number {
   return cache.length;
+}
+/** 卫星贴图(程序化等距圆柱):按类型给底色 + 陨坑 + 极冠(真生成会让星系页卡死,先保留这个) */
+export function moonTextureOf(moon: { type?: string; radius: number; mass: number }, seed: number): HTMLCanvasElement {
+  const W = 1024;
+  const H = 512;
+  const cv = document.createElement('canvas');
+  cv.width = W;
+  cv.height = H;
+  const ctx = cv.getContext('2d');
+  if (!ctx) return cv;
+  const kind = moon.type ?? (moon.radius < 0.12 || moon.mass < 0.005 ? 'dwarf' : 'rocky');
+  const base = kind === 'ice' ? '#c9d6e4' : kind === 'dwarf' ? '#6d6d72' : '#8f8b86';
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, W, H);
+  let s = seed >>> 0;
+  const rnd = () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  for (let i = 0; i < 1600; i++) {
+    const x = rnd() * W;
+    const y = rnd() * H;
+    const r = 3 + rnd() * 26;
+    const v = 0.45 + rnd() * 0.55;
+    ctx.fillStyle = `rgba(${Math.round(255 * v * 0.62)},${Math.round(255 * v * 0.6)},${Math.round(255 * v * 0.57)},0.2)`;
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * (0.6 + rnd() * 0.6), rnd() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  for (let i = 0; i < 420; i++) {
+    const x = rnd() * W;
+    const y = rnd() * H;
+    const r = 2 + rnd() * 10;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(20,20,24,${0.4 + rnd() * 0.4})`;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x - r * 0.2, y - r * 0.2, r * 0.8, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,255,255,${0.08 + rnd() * 0.12})`;
+    ctx.fill();
+  }
+  if (kind === 'ice' || moon.radius < 0.4) {
+    const g1 = ctx.createLinearGradient(0, 0, 0, H * 0.14);
+    g1.addColorStop(0, 'rgba(245,250,255,0.85)');
+    g1.addColorStop(1, 'rgba(245,250,255,0)');
+    ctx.fillStyle = g1;
+    ctx.fillRect(0, 0, W, H * 0.14);
+    const g2 = ctx.createLinearGradient(0, H, 0, H * 0.86);
+    g2.addColorStop(0, 'rgba(245,250,255,0.85)');
+    g2.addColorStop(1, 'rgba(245,250,255,0)');
+    ctx.fillStyle = g2;
+    ctx.fillRect(0, H * 0.86, W, H * 0.14);
+  }
+  return cv;
 }

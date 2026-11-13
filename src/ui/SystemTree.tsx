@@ -234,7 +234,7 @@ export function SystemTree(p: SystemTreeProps) {
   };
 
   return (
-    <div style={{ position: 'relative' }} onClick={() => menu && setMenu(null)} onContextMenu={(e) => { e.preventDefault(); const add = (role: 'planet' | 'binaryPair' | 'gasSystem' | 'habitableMoonSystem', label: string) => {  const used = new Set((overrides.groups ?? []).flatMap((x) => x.members));  const free = spec.planets.map((b) => b.index).find((k) => !used.has(k));  const wantGas = role === 'gasSystem' || role === 'habitableMoonSystem';  let idx: number | undefined = free;  if (idx === undefined) {   const cur = wantGas ? counts.gas : counts.planets;   const max = wantGas ? 4 : 6;   if (cur >= max) { e.preventDefault(); window.alert('行星数到上限了'); return null; }   idx = cur;   onParams(setBodyCount(wantGas ? 'gas' : 'rocky', cur + 1));  }  return { label, run: () => onChange(addGroup(overrides, role, [idx as number])) }; }; const items = ([  add('planet', '加子星系:单行星系'),  add('binaryPair', '加子星系:双固态行星系'),  add('gasSystem', '加子星系:气态母行星系'),  add('habitableMoonSystem', '加子星系:宜居卫星系'), ] as const).filter(Boolean) as { label: string; run: () => void }[]; if (items.length) openMenu(e, '星系树(空白处)', items); }}>
+    <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', minHeight: '100%' }} onClick={() => menu && setMenu(null)} onContextMenu={(e) => { e.preventDefault(); const add = (role: 'planet' | 'binaryPair' | 'gasSystem' | 'habitableMoonSystem', label: string) => {  const used = new Set((overrides.groups ?? []).flatMap((x) => x.members));  const free = spec.planets.map((b) => b.index).find((k) => !used.has(k));  const wantGas = role === 'gasSystem' || role === 'habitableMoonSystem';  let idx: number | undefined = free;  if (idx === undefined) {   const cur = wantGas ? counts.gas : counts.planets;   const max = wantGas ? 4 : 6;   if (cur >= max) { e.preventDefault(); window.alert('行星数到上限了'); return null; }   idx = cur;   onParams(setBodyCount(wantGas ? 'gas' : 'rocky', cur + 1));  }  return { label, run: () => onChange(addGroup(overrides, role, [idx as number])) }; }; const items = ([  add('planet', '加子星系:单行星系'),  add('binaryPair', '加子星系:双固态行星系'),  add('gasSystem', '加子星系:气态母行星系'),  add('habitableMoonSystem', '加子星系:宜居卫星系'), ] as const).filter(Boolean) as { label: string; run: () => void }[]; if (items.length) openMenu(e, '星系树(空白处)', items); }}>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', margin: '2px 0 6px', fontSize: 12, color: 'rgba(30,30,40,0.65)' }} data-act="tree-head">
         <span>星系树</span>
       </div>
@@ -391,7 +391,7 @@ export function SystemTree(p: SystemTreeProps) {
           };
           openMenu(e, '星系树(空白处)', [add('planet', '加子星系:单行星系'), add('binaryPair', '加子星系:双固态行星系'), add('gasSystem', '加子星系:气态母行星系'), add('habitableMoonSystem', '加子星系:宜居卫星系')]);
         }}
-        style={{ minHeight: 26, marginTop: 6, borderTop: '1px dashed rgba(120,130,150,0.25)', fontSize: 11, opacity: 0.55, paddingTop: 4, cursor: 'context-menu' }}
+        style={{ flex: 1, minHeight: 160, marginTop: 6, borderTop: '1px dashed rgba(120,130,150,0.25)', fontSize: 11, opacity: 0.55, paddingTop: 4, cursor: 'context-menu' }}
       >
         空白处右键 → 加子星系
       </div>

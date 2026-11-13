@@ -19,3 +19,7 @@ scripts/show-stage.mjs
 scripts/update-*.mjs
 docs/backup/
 docs/preview/
+scripts/probe*.ts
+scripts/clean-*.mjs
+scripts/revert-*.mjs
+scripts/sync-todolist*.mjs
